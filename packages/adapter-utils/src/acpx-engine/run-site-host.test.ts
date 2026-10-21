@@ -110,4 +110,40 @@ describe("host run site", () => {
 
     expect(site.reuseCandidate(resources)).toEqual({ runtime, sessionHandle });
   });
+  it.each(["error", "undefined"] as const)("retains supplied original warm predecessor after %s close rejection without redispatch", async kind => {
+    const key = "legacy-supplied-predecessor", entry = makeEntry(key, Date.now()), failure = kind === "error" ? new Error("original warm close uncertain") : undefined;
+    const close = vi.fn(async () => { throw failure; }); entry.runtime.close = close;
+    const warmHandles = new Map([[key, entry]]);
+    const store = createHostRunSite({ warmHandles, now: () => Date.now(), idleMs: 0,
+      closeWarmEntry: original => original.runtime.close({ handle: original.handle, reason: "fixture original retirement", discardPersistentState: false }) }).reuse();
+    await expect(store.discard(key)).rejects.toBe(failure);
+    expect(warmHandles.get(key)).toBe(entry);
+    expect(() => store.borrow(key)).toThrow(/cleanup|release|inspection/i);
+    await expect(store.discard(key)).rejects.toBe(failure);
+    expect(close).toHaveBeenCalledOnce(); expect(warmHandles.get(key)).toBe(entry);
+  });
+  it("refuses borrowed reuse during actual pending close and deletes only after its one acknowledged return", async () => {
+    const key = "supplied-pending-predecessor", entry = makeEntry(key, Date.now()); let finish!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; }), close = vi.fn(async () => { await gate; }); entry.runtime.close = close;
+    const warmHandles = new Map([[key, entry]]), store = createHostRunSite({ warmHandles, now: () => Date.now(), idleMs: 0,
+      closeWarmEntry: original => original.runtime.close({ handle: original.handle, reason: "fixture original retirement", discardPersistentState: false }) }).reuse();
+    const first = store.discard(key), second = store.discard(key);
+    try {
+      await Promise.resolve(); expect(close).toHaveBeenCalledOnce(); expect(warmHandles.get(key)).toBe(entry);
+      expect(() => store.borrow(key)).toThrow(/cleanup|release|inspection/i);
+    } finally { finish(); }
+    await Promise.all([first, second]);
+    expect(warmHandles.has(key)).toBe(false); expect(store.borrow(key)).toBeUndefined();
+    await store.discard(key); expect(close).toHaveBeenCalledOnce();
+  });
+  it("keeps an idle supplied predecessor occupied after failed exact eviction", async () => {
+    const key = "supplied-idle-predecessor", entry = makeEntry(key, Date.now() - 10_000), failure = new Error("idle predecessor close uncertain");
+    const close = vi.fn(async () => { throw failure; }); entry.runtime.close = close;
+    const warmHandles = new Map([[key, entry]]), store = createHostRunSite({ warmHandles, now: () => Date.now(), idleMs: 1_000,
+      closeWarmEntry: original => original.runtime.close({ handle: original.handle, reason: "fixture idle retirement", discardPersistentState: false }) }).reuse();
+    await expect(store.evictIdle(Date.now())).rejects.toBe(failure); expect(warmHandles.get(key)).toBe(entry);
+    expect(() => store.borrow(key)).toThrow(/cleanup|release|inspection/i);
+    await expect(store.evictIdle(Date.now())).rejects.toBe(failure); expect(close).toHaveBeenCalledOnce();
+  });
+
 });

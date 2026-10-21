@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, environmentLeases, environments, issues, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -138,6 +138,28 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(await db.select().from(runUsageReceipts)).toHaveLength(1);
     expect(await finalizations()).toMatchObject([{ status: "succeeded" }]);
     expectCleanup(input);
+  });
+
+  it("binds the assembled SSH adapter stop callback before instruction collection", async () => {
+    const { input, adapter, run } = await fixture();
+    const [environment] = await db.insert(environments).values({ name: randomUUID(), driver: "ssh" }).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId: run.companyId, heartbeatRunId: run.id,
+      environmentId: environment.id, status: "active", leasePolicy: "ephemeral", provider: "ssh",
+      providerLeaseId: "ssh://node@fixture:2222/work", metadata: { agentId: run.agentId } }).returning();
+    input.workspace.executionTarget = { kind: "remote", transport: "ssh", spec: { host: "fixture" }, remoteCwd: "/work" } as any;
+    input.workspace.activeEnvironmentLease = { environment, lease, leaseContext: {} } as any;
+    const invocationId = randomUUID();
+    input.instructions.collectStoppedInstructions = async () => {
+      const [row] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id));
+      expect(row.metadata?.remoteExecutionTermination).toMatchObject({ runId: run.id, leaseId: lease.id, sshInvocationId: invocationId });
+      expect(row.cleanupStatus).toBeNull();
+    };
+    adapter.execute.mockImplementationOnce(async ctx => {
+      await ctx.onProviderStopped?.({ sshInvocationId: invocationId });
+      return { exitCode: 0, signal: null, timedOut: false };
+    });
+    await executeHeartbeatRuntime(db, input);
+    expect(adapter.execute).toHaveBeenCalledOnce();
   });
 
   it("preserves Stop metadata and marks no-work accounting without manufacturing a receipt", async () => {

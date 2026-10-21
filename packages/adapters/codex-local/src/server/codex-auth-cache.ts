@@ -1,5 +1,6 @@
+import fs from "node:fs/promises";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
@@ -503,7 +504,7 @@ export async function selectVendCredential(
   log: (line: string) => void | Promise<void>,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<VendCodexAuthOutcome> {
-  const hostBytes = await readFile(sharedHomeAuthPath).catch((error: NodeJS.ErrnoException) => {
+  const hostBytes = await fs.readFile(sharedHomeAuthPath).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
     throw error;
   });
@@ -513,59 +514,72 @@ export async function selectVendCredential(
     return "no-host-identity";
   }
 
-  let cacheEntryPath: string;
-  try {
-    cacheEntryPath = resolveCacheEntryPath(hostAccountId);
-  } catch {
-    // A host identity that cannot form a safe cache key never vends.
-    return "no-host-identity";
-  }
-
   const hostDir = path.dirname(sharedHomeAuthPath);
   return withDirectoryMergeLock(hostDir, async () => {
-    // Read the cached bytes under the lock, then stage exactly those bytes into a
-    // private (0600) temp next to the host target. The predicate reads the temp,
-    // so the vend installs exactly the bytes the predicate approved. This closes
-    // the read-after-validate skew: a separate reader of `cacheEntryPath` could
-    // otherwise see different bytes than the ones installed. The rename over the
-    // host target stays device-local and atomic.
-    const cacheBytes = await readFile(cacheEntryPath).catch((error: NodeJS.ErrnoException) => {
+    // The identity observed before waiting is not authority to publish. Anchor
+    // selection to the actual host bytes while holding the directory lock.
+    const currentHost = await fs.readFile(sharedHomeAuthPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    const currentAccountId = currentHost ? readSubscriptionAccountId(currentHost) : null;
+    if (!currentAccountId) return "no-host-identity";
+    let cacheEntryPath: string;
+    try { cacheEntryPath = resolveCacheEntryPath(currentAccountId); }
+    catch { return "no-host-identity"; }
+    const syncHostDirectory = async () => {
+      const directory = await fs.open(hostDir, "r");
+      let failed = false, failure: unknown;
+      try { await directory.sync(); } catch (error) { failed = true; failure = error; }
+      try { await directory.close(); }
+      catch (error) { failure = failed ? new AggregateError([failure, error], "Codex host directory sync and close failed") : error; failed = true; }
+      if (failed) throw failure;
+    };
+    const finishCurrentHostBarrier = async (expected: Buffer) => {
+      if (!(await fs.readFile(sharedHomeAuthPath)).equals(expected)) throw new Error("Codex host credential changed during publication");
+      await syncHostDirectory();
+      if (!(await fs.readFile(sharedHomeAuthPath)).equals(expected)) throw new Error("Codex host credential changed during publication");
+    };
+    const cacheBytes = await fs.readFile(cacheEntryPath).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return null;
       throw error;
     });
     if (!cacheBytes) {
+      await finishCurrentHostBarrier(currentHost!);
       await log("[paperclip] Codex auth cache: no cached credential for the host identity; host credential kept.");
       return "kept-host";
     }
-    const stagedTempPath = path.join(
-      hostDir,
-      `.auth.json.vend-${process.pid}-${randomUUID()}.tmp`,
-    );
-    const handle = await open(stagedTempPath, "wx", 0o600);
+    const stagedTempPath = path.join(hostDir, `.auth.json.vend-${process.pid}-${randomUUID()}.tmp`);
+    let failed = false, failure: unknown, outcome: VendCodexAuthOutcome = "kept-host";
     try {
-      await handle.writeFile(cacheBytes);
-      await handle.close();
-      // Default-mode predicate: install the cache copy only when it is strictly
-      // newer for the SAME identity. Same-identity + strictly-newer keeps the
-      // change additive and semantics-preserving.
-      const decision = await decideCodexAuthMerge(stagedTempPath, sharedHomeAuthPath, {
-        errorLabel: "codex auth cache",
-      });
+      const handle = await fs.open(stagedTempPath, "wx", 0o600);
+      let prepareFailed = false, prepareFailure: unknown;
+      try { await handle.writeFile(cacheBytes); await handle.sync(); }
+      catch (error) { prepareFailed = true; prepareFailure = error; }
+      try { await handle.close(); }
+      catch (error) { prepareFailure = prepareFailed ? new AggregateError([prepareFailure, error], "Codex vend preparation and close failed") : error; prepareFailed = true; }
+      if (prepareFailed) throw prepareFailure;
+      const decision = await decideCodexAuthMerge(stagedTempPath, sharedHomeAuthPath, { errorLabel: "codex auth cache" });
       if (decision === USE_SOURCE_EXIT) {
-        await rename(stagedTempPath, sharedHomeAuthPath);
-        await log(
-          "[paperclip] Codex auth cache: refreshed the host credential with a strictly-newer cached copy of the same identity at mode 0600.",
-        );
-        return "vended";
+        await fs.rename(stagedTempPath, sharedHomeAuthPath);
+        // A failed barrier leaves the actual published bytes in place. Never
+        // pretend to roll back or report vended from byte equality on retry.
+        await finishCurrentHostBarrier(cacheBytes);
+        outcome = "vended";
+        await log("[paperclip] Codex auth cache: refreshed the host credential with a strictly-newer cached copy of the same identity at mode 0600.");
+      } else {
+        await finishCurrentHostBarrier(currentHost!);
+        await log("[paperclip] Codex auth cache: host credential kept (the cached copy is not strictly newer for the same identity).");
       }
-      await log(
-        "[paperclip] Codex auth cache: host credential kept (the cached copy is not strictly newer for the same identity).",
-      );
-      return "kept-host";
-    } finally {
-      await handle.close().catch(() => undefined);
-      await rm(stagedTempPath, { force: true }).catch(() => undefined);
-    }
+    } catch (error) { failed = true; failure = error; }
+    // Attempt independent cleanup even after preparation/publication failure.
+    // Preserve original causal errors, including an original throw undefined.
+    try { await fs.rm(stagedTempPath, { force: true }); }
+    catch (error) { failure = failed ? new AggregateError([failure, error], "Codex vend and staged cleanup failed") : error; failed = true; }
+    try { await syncHostDirectory(); }
+    catch (error) { failure = failed ? new AggregateError([failure, error], "Codex vend and cleanup directory sync failed") : error; failed = true; }
+    if (failed) throw failure;
+    return outcome;
   }, env);
 }
 

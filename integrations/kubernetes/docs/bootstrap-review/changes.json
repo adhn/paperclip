@@ -1,0 +1,62 @@
+{
+  "baseline": "PR #5 91acad5 native overlay; unmodified upstream baseline for newly overlaid existing files",
+  "sourceRevision": "252d9b5077f4eee98ec48225641ef1a02d824158",
+  "functionalCandidate": "e6098c8",
+  "contextLines": 0,
+  "excluded": "Generated snapshots; retained separately with manifest hashes",
+  "patchSha256": "390645bc10a708bc811e3b5d7feff453ea2c369845f325c9c64e58e771d82365",
+  "files": {
+    "packages/db/src/schema/execution_admission.ts": {
+      "beforeSha256": "7998b71bd68f6c8d60068bf1a3bb2faa1197e2b76f4034cc997da2f9dac230d0",
+      "afterSha256": "d15356801d0e4fe4672b3a5c82ecd5567d0d8485cd9892d3b0e8034e71373134"
+    },
+    "packages/db/src/migrations/meta/_journal.json": {
+      "beforeSha256": "9f65b0ecbda6024f82a0c7da4b31cb193b22513f39fc8fbeae4a75ac17f1b4b3",
+      "afterSha256": "a917003a7639cc20ca9134a16bf2fc8268b5c11e5eebb3cf28a347304aafe291"
+    },
+    "server/src/services/execution-admission.ts": {
+      "beforeSha256": "262ecbd2db82da8ff628faf84e21fb79621f374118611389a29564f34ddc14d8",
+      "afterSha256": "51469695948a5907cc238a0ea1795dd3b27e04b102fef1fa5684f842da380dec"
+    },
+    "server/src/__tests__/execution-admission.test.ts": {
+      "beforeSha256": "de68db4a67cba2ff0b4243e601dff8e7f5396238d474f0c9895dfbe2fd667648",
+      "afterSha256": "fb057d4d4a51e1a89eee3ff90fc632d6c570bb7e8916526707504b8f83627219"
+    },
+    "server/src/services/heartbeat/queue.test.ts": {
+      "beforeSha256": "6cd18e6b869ee66be1be531f7c38a1c36f6e3ef9ff4bcc405d1d6dcd91686096",
+      "afterSha256": "913f5302aab6c4a503bf7afa9ac4887dc48c2dee90f4b58e214ca1fadc3e66d4"
+    },
+    "server/src/__tests__/heartbeat-queued-run-claim-isolation.test.ts": {
+      "beforeSha256": "d2f9116e8a8eb1c5d020a1798fb4b5a2b2580c0990f34cdcfbbff6b14925b409",
+      "afterSha256": "381e62534346bc1da9173236ee6c7f3c754ae3d2ceef0d89cf456d76b5a04c87"
+    },
+    "server/src/services/execution-capacity-policy.ts": {
+      "beforeSha256": "cd9e94b3359db62f97eb8ca044ec6cab6d2bddf5c66fa60b1a2e8b63e5cfe4c9",
+      "afterSha256": "26bea37523d547f457772c39ec2356f569026aeeb5fc0882b30fa6702ee049da"
+    },
+    "server/src/services/execution-capacity-context.ts": {
+      "beforeSha256": "e0e6a78a04054aaef13fc23e640dba31a0db023c548c4697e77ffc2ff051cc3a",
+      "afterSha256": "49a2e387e44c89655bfe0e6cecd02e0a1a306891708a10169833468382394d40"
+    },
+    "server/src/services/execution-admission-operations.ts": {
+      "beforeSha256": "b451d0fea875c41339ab739b9bb41289affd70d3c82ee904cd6d79e4e30255d6",
+      "afterSha256": "1052150c104c9a27ae13e994871970ce0a7c4b91a6994b35f52fe779c36eb727"
+    },
+    "server/src/index.ts": {
+      "beforeSha256": "b2f3b57eb0b97fd098425d560f593ccb1898aa408b6e541f2f3aed2ee7e52d33",
+      "afterSha256": "278b1ecb3a66ec05ecb518946b0932153d07f05c14b324a7794779566832f8df"
+    },
+    "server/src/services/execution-admission-bootstrap.ts": {
+      "beforeSha256": null,
+      "afterSha256": "be5af301bff437f628144ab3abd7ef50406abae3506ea03af0466dbcc5daf827"
+    },
+    "server/src/__tests__/execution-admission-bootstrap.test.ts": {
+      "beforeSha256": null,
+      "afterSha256": "a3eb5651b10c1fd754874b2829b92bb6a28893282d3f6ae9df3e70780d309716"
+    },
+    "packages/db/src/migrations/0344_volatile_colossus.sql": {
+      "beforeSha256": null,
+      "afterSha256": "a71b0239aa6a119d7294a100141c410ebab01d22a5f9700cbeb419bbf4bb50e7"
+    }
+  }
+}

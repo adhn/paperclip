@@ -1,0 +1,57 @@
+name: Paperclip independent authority component contracts
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [paperclip-concurrency-admission]
+    paths:
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/**
+      - '!clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/custody_service.py'
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_production_contracts.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_production_stream.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_production_evidence.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_operation_worker.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_decision_history.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_runtime_boundary.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_write_authority.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_decision_use.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_runtime_owned.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_owned_authority_calls.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_retained_decision_store.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/scripts/patch-native-admission.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/scripts/test-native-patch-guards.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paperclip-production-client-contracts
+  cancel-in-progress: true
+
+jobs:
+  client-contracts-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      PACKAGE: clusters/homelab/infrastructure/paperclip-evaluation/protected-execution
+      PYTHON_IMAGE: docker.io/library/python@sha256:8dca233de9f3d9bb410665f00a4da6dd06f331083137e0e98ccf227236fcc438
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Verify client ordering and refusals without production authorities
+        run: |
+          docker run --rm --init --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --user 2000:2000 --memory 256m --memory-swap 512m --cpus 1 --pids-limit 64 \
+            --tmpfs /tmp:rw,noexec,nosuid,uid=2000,gid=2000,mode=700,size=32m \
+            --mount "type=bind,source=$PWD/$PACKAGE,target=/app,readonly" --workdir /app \
+            -e PYTHONDONTWRITEBYTECODE=1 --entrypoint python3 "$PYTHON_IMAGE" \
+            -m unittest -v test_production_contracts test_production_stream test_production_evidence test_operation_worker test_decision_history test_runtime_boundary test_write_authority test_decision_use test_runtime_owned test_owned_authority_calls test_retained_decision_store
+      - name: Verify native reconstruction refuses under optimized Python
+        run: |
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --user 2000:2000 --memory 256m --memory-swap 512m --cpus 1 --pids-limit 64 \
+            --tmpfs /tmp:rw,noexec,nosuid,uid=2000,gid=2000,mode=700,size=32m \
+            --mount "type=bind,source=$PWD/$PACKAGE/..,target=/package,readonly" --workdir /package \
+            -e PYTHONDONTWRITEBYTECODE=1 --entrypoint python3 "$PYTHON_IMAGE" \
+            /package/scripts/test-native-patch-guards.py

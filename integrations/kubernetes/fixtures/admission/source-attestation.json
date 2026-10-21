@@ -1,0 +1,17 @@
+{
+  "checkedAt": "2026-10-18",
+  "homelabRevision": "316a0a4d5824cedb33fb0b6cdde37fe611253dc4",
+  "sourceRevision": "252d9b5077f4eee98ec48225641ef1a02d824158",
+  "controllerDigest": "sha256:8bd2d8ccef956c777ea6eefa2004152632e0781706031e8cd42ef89bdd7c50ca",
+  "liveSourceSha256": {
+    "server/src/services/heartbeat.ts": "dfccf4464684ffb5601a015f9a17548acec2102214a6b200f129712233e6ff47",
+    "server/src/services/heartbeat/queue.ts": "298f2edd2d2625df02ec16787f99fe2d8ecfcddff59470ccf1eb889190143939",
+    "server/src/services/heartbeat/recovery.ts": "78b3015171192e667647d432ebb09cf15b4db94b3f45a58f9b537d1d3263a5c3",
+    "server/src/services/heartbeat/runtime-execution.ts": "8e6eb5a8eb55696e9134658041bb3bb5cec033fca728204c263c84e3bcbef83d",
+    "server/src/routes/agents.ts": "18f2fbb14129ecc7bfd7c53b89956cc1dfa3e7eda04d947b339179d2245b2b03",
+    "server/src/services/environment-runtime.ts": "eb5957922930e5b7243fde0e93d85a0b0af4fbeef01f39e815a7454b22581ca3",
+    "packages/adapter-utils/src/ssh.ts": "33e7381e2fbb19b01d868100312f723a7d5ca9d280637db65ad7f11f3cce93c4",
+    "packages/adapter-utils/src/execution-target.ts": "a3e4c4c65a016d3f75155b54d0c1d27f2ab840abd2a00cca934fd62827a0bbdf",
+    "packages/adapter-utils/src/server-utils.ts": "f3fbcc2d2c1b2fc2b4ab0465fdf2fdfbf01c01c4dd848a7ce57dac75ee6f76e8"
+  }
+}

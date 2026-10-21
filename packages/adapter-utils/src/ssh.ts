@@ -1,10 +1,12 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile, spawn } from "node:child_process";
 import { constants as fsConstants, createReadStream, createWriteStream, promises as fs } from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Transform } from "node:stream";
+import { requireExecutionStateRestoration, withExecutionStateMutation } from "./execution-state-journal.js";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import {
   createUnrelatedHistoryGraftCommit,
@@ -14,7 +16,7 @@ import {
 } from "./git-workspace-sync.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { DirectorySnapshot } from "./workspace-restore-merge.js";
-import { mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
+import { captureDirectorySnapshot, serializeDirectorySnapshot, mergeDirectoryWithBaseline, withDirectoryMergeLock } from "./workspace-restore-merge.js";
 import {
   createRuntimeProgressReporter,
   type RuntimeProgressDirection,
@@ -41,11 +43,31 @@ export interface SshRemoteExecutionSpec extends SshConnectionConfig {
   remoteCwd: string;
 }
 
+export interface SshCommandPayload {
+  command: string; args: string[]; env: Record<string, string>; cwd: string | null;
+}
+export interface SshSpawnTarget {
+  command: string; args: string[]; cleanup: () => Promise<void>; stopRemote: () => Promise<void>; sshInvocationId: string;
+}
+export interface SshCommandJournal {
+  authorize(spec: SshConnectionConfig, commandHash: string, environment: Readonly<Record<string, string>>, payload: Readonly<SshCommandPayload>): Promise<SshLaunchAuthorization>;
+  // Host installation only. Failure cannot fall through to the legacy SSH path.
+  spawnProtected?(authorization: SshLaunchAuthorization, payload: Readonly<SshCommandPayload>): Promise<SshSpawnTarget>;
+  stopped(authorization: SshLaunchAuthorization): Promise<void>;
+  settled?(authorization: SshLaunchAuthorization): void;
+  keepAlive?(stop: () => Promise<void>): void;
+}
+const sshCommandJournal = new AsyncLocalStorage<SshCommandJournal | undefined>();
+export function withSshCommandJournal<T>(journal: SshCommandJournal, body: () => Promise<T>): Promise<T> {
+  return sshCommandJournal.run(journal, body);
+}
+
 export function createSshCommandManagedRuntimeRunner(input: {
   spec: SshRemoteExecutionSpec;
   defaultCwd?: string | null;
   maxBufferBytes?: number | null;
 }): CommandManagedRuntimeRunner {
+  const managedJournal = sshCommandJournal.getStore();
   const defaultCwd = input.defaultCwd?.trim() || input.spec.remoteCwd;
   const maxBufferBytes =
     typeof input.maxBufferBytes === "number" && Number.isFinite(input.maxBufferBytes) && input.maxBufferBytes > 0
@@ -53,6 +75,25 @@ export function createSshCommandManagedRuntimeRunner(input: {
       : 1024 * 1024;
 
   return {
+    ...(sshCommandJournal.getStore() ? { startService: async (serviceInput: { command: string; args?: string[]; cwd?: string; env?: Record<string, string> }) => {
+      const journal = managedJournal ?? sshCommandJournal.getStore();
+      if (!journal) throw new Error("SSH service requires a host command journal");
+      const target = await withSshCommandJournal(journal, () => buildSshSpawnTarget({ spec: { ...input.spec, remoteCwd: serviceInput.cwd ?? defaultCwd },
+        command: serviceInput.command, args: serviceInput.args ?? [], env: serviceInput.env ?? {} }));
+      const child = spawn(target.command, target.args, { stdio: "ignore" });
+      const closed = new Promise<void>(resolve => { child.once("close", () => resolve()); child.once("error", () => {}); });
+      let stopping: Promise<void> | undefined;
+      const stop = () => stopping ??= (async () => {
+        try { await target.stopRemote(); }
+        finally {
+          await terminateTransferChild(child);
+          await closed;
+          await target.cleanup();
+        }
+      })();
+      journal.keepAlive?.(stop);
+      return { stop };
+    } } : {}),
     execute: async (commandInput): Promise<RunProcessResult> => {
       const startedAt = new Date().toISOString();
       const command = commandInput.command.trim();
@@ -72,11 +113,13 @@ export function createSshCommandManagedRuntimeRunner(input: {
       const remoteCommand = `cd ${shellQuote(cwd)} && ${commandScript}`;
 
       try {
-        const result = await runSshCommand(input.spec, remoteCommand, {
+        const execute = () => runSshCommand(input.spec, remoteCommand, {
+          env: Object.fromEntries(envEntries),
           stdin: commandInput.stdin,
           timeoutMs: commandInput.timeoutMs,
           maxBuffer: maxBufferBytes,
         });
+        const result = managedJournal ? await withSshCommandJournal(managedJournal, execute) : await execute();
         if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
         if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
         return {
@@ -97,7 +140,7 @@ export function createSshCommandManagedRuntimeRunner(input: {
           killed?: unknown;
         };
         const stdout = typeof failure.stdout === "string" ? failure.stdout : "";
-        const stderr = typeof failure.stderr === "string"
+        const stderr = typeof failure.stderr === "string" && failure.stderr
           ? failure.stderr
           : error instanceof Error
             ? error.message
@@ -237,6 +280,7 @@ async function spawnText(
     let stderr = "";
     let settled = false;
     let timedOut = false;
+    let outputError: Error | undefined;
 
     const finishReject = (error: Error & { stdout?: string; stderr?: string; code?: number | null; killed?: boolean }) => {
       if (settled) return;
@@ -251,6 +295,7 @@ async function spawnText(
       streamName: "stdout" | "stderr",
       chunk: unknown,
     ) => {
+      if (outputError) return;
       const text = String(chunk);
       if (streamName === "stdout") {
         stdout += text;
@@ -258,10 +303,12 @@ async function spawnText(
         stderr += text;
       }
       if (Buffer.byteLength(stdout, "utf8") > maxBuffer || Buffer.byteLength(stderr, "utf8") > maxBuffer) {
+        outputError = new Error(`Process output exceeded maxBuffer of ${maxBuffer} bytes.`);
+        stdout = stdout.slice(0, maxBuffer);
+        stderr = stderr.slice(0, maxBuffer);
         child.kill("SIGTERM");
-        finishReject(Object.assign(new Error(`Process output exceeded maxBuffer of ${maxBuffer} bytes.`), {
-          code: null,
-        }));
+        killEscalation = setTimeout(() => child.kill("SIGKILL"), 1_000);
+        killEscalation.unref?.();
       }
     };
 
@@ -306,14 +353,14 @@ async function spawnText(
       clearTimers();
       if (settled) return;
       settled = true;
-      if (code === 0) {
+      if (code === 0 && !outputError && !timedOut) {
         resolve({ stdout, stderr });
         return;
       }
-      reject(Object.assign(new Error(stderr.trim() || stdout.trim() || `Process exited with code ${code ?? -1}`), {
+      reject(Object.assign(outputError ?? new Error(stderr.trim() || stdout.trim() || `Process exited with code ${code ?? -1}`), {
         stdout,
         stderr,
-        code,
+        code: outputError || timedOut ? null : code,
         signal,
         killed: timedOut,
       }));
@@ -646,24 +693,52 @@ async function readLocalGitWorkspaceSnapshot(localDir: string): Promise<LocalGit
   }
 }
 
+async function syncRestoredDirectory(root: string): Promise<void> {
+  for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+    const filePath = path.join(root, entry.name);
+    if (entry.isDirectory()) await syncRestoredDirectory(filePath);
+    else if (entry.isFile()) {
+      const handle = await fs.open(filePath, "r");
+      try { await handle.sync(); } finally { await handle.close(); }
+    }
+    // Symlinks are saved as directory entries; never follow them to fsync a
+    // sibling's files. Sync the containing directory below instead.
+  }
+  const directory = await fs.open(root, "r");
+  try { await directory.sync(); } finally { await directory.close(); }
+}
+
+async function terminateTransferChild(child: ReturnType<typeof spawn>): Promise<void> {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise<void>(resolve => {
+    child.once("close", () => { clearTimeout(escalate); resolve(); });
+    const escalate = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }, 1_000);
+    child.kill("SIGTERM");
+  });
+}
+
+async function buildSshStreamTarget(spec: SshConnectionConfig, script: string) {
+  if (sshCommandJournal.getStore()) return buildSshSpawnTarget({
+    spec: { ...spec, remoteCwd: spec.remoteWorkspacePath }, command: "sh", args: ["-c", script], env: {}, cwd: null,
+  });
+  const auth = await createSshAuthArgs(spec);
+  return { command: "ssh", args: [...auth.args, "-p", String(spec.port), `${spec.username}@${spec.host}`,
+    `sh -c ${shellQuote(script)}`], cleanup: auth.cleanup };
+}
+
 async function streamLocalFileToSsh(input: {
   spec: SshConnectionConfig;
   localFile: string;
   remoteScript: string;
   progress?: TransferProgress;
 }): Promise<void> {
-  const auth = await createSshAuthArgs(input.spec);
-  const sshArgs = [
-    ...auth.args,
-    "-p",
-    String(input.spec.port),
-    `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(input.remoteScript)}`,
-  ];
-
+  const transport = await buildSshStreamTarget(input.spec, input.remoteScript);
+  const sshArgs = transport.args;
   await new Promise<void>((resolve, reject) => {
     const source = createReadStream(input.localFile);
-    const ssh = spawn("ssh", sshArgs, {
+    const ssh = spawn(transport.command, sshArgs, {
       stdio: ["pipe", "ignore", "pipe"],
     });
 
@@ -674,8 +749,7 @@ async function streamLocalFileToSsh(input: {
       if (settled) return;
       settled = true;
       source.destroy();
-      ssh.kill("SIGTERM");
-      reject(error);
+      void terminateTransferChild(ssh).then(() => reject(error), reject);
     };
 
     ssh.stderr?.on("data", (chunk) => {
@@ -683,6 +757,7 @@ async function streamLocalFileToSsh(input: {
     });
     source.on("error", fail);
     ssh.on("error", fail);
+    ssh.stdin?.on("error", fail);
     if (input.progress) {
       input.progress.counter.on("error", fail);
       source.pipe(input.progress.counter).pipe(ssh.stdin ?? null);
@@ -692,13 +767,13 @@ async function streamLocalFileToSsh(input: {
     ssh.on("close", (code) => {
       if (settled) return;
       settled = true;
-      if ((code ?? 0) !== 0) {
+      if (code !== 0) {
         reject(new Error(sshStderr.trim() || `ssh exited with code ${code ?? -1}`));
         return;
       }
       resolve();
     });
-  }).finally(auth.cleanup);
+  }).finally(transport.cleanup);
 }
 
 async function streamSshToLocalFile(input: {
@@ -707,17 +782,10 @@ async function streamSshToLocalFile(input: {
   localFile: string;
   progress?: TransferProgress;
 }): Promise<void> {
-  const auth = await createSshAuthArgs(input.spec);
-  const sshArgs = [
-    ...auth.args,
-    "-p",
-    String(input.spec.port),
-    `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(input.remoteScript)}`,
-  ];
-
+  const transport = await buildSshStreamTarget(input.spec, input.remoteScript);
+  const sshArgs = transport.args;
   await new Promise<void>((resolve, reject) => {
-    const ssh = spawn("ssh", sshArgs, {
+    const ssh = spawn(transport.command, sshArgs, {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const sink = createWriteStream(input.localFile, { mode: 0o600 });
@@ -728,9 +796,8 @@ async function streamSshToLocalFile(input: {
     const fail = (error: Error) => {
       if (settled) return;
       settled = true;
-      ssh.kill("SIGTERM");
       sink.destroy();
-      reject(error);
+      void terminateTransferChild(ssh).then(() => reject(error), reject);
     };
 
     if (input.progress) {
@@ -748,14 +815,14 @@ async function streamSshToLocalFile(input: {
       sink.end(() => {
         if (settled) return;
         settled = true;
-        if ((code ?? 0) !== 0) {
+        if (code !== 0) {
           reject(new Error(sshStderr.trim() || `ssh exited with code ${code ?? -1}`));
           return;
         }
         resolve();
       });
     });
-  }).finally(auth.cleanup);
+  }).finally(transport.cleanup);
 }
 
 async function importGitWorkspaceToSsh(input: {
@@ -1273,7 +1340,7 @@ export function buildKnownHostsEntry(input: {
   return `[${input.host}]:${input.port} ${input.publicKey.trim()}`;
 }
 
-export async function runSshCommand(
+async function runUnjournalledSshCommand(
   config: SshConnectionConfig,
   remoteCommand: string,
   options: {
@@ -1282,6 +1349,7 @@ export async function runSshCommand(
     timeoutMs?: number;
     maxBuffer?: number;
   } = {},
+  protocolOnly = false,
 ): Promise<SshCommandResult> {
   let cleanup: () => Promise<void> = () => Promise.resolve();
   try {
@@ -1308,7 +1376,7 @@ export async function runSshCommand(
     // directly when no .bash_profile exists, so a host that adds nvm in
     // .bashrc still resolves node without a double-run of the setup.
     const envArgs = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
-    const remoteScript = [
+    const remoteScript = protocolOnly ? remoteCommand : [
       'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
@@ -1340,27 +1408,163 @@ export async function runSshCommand(
   }
 }
 
+export async function runSshCommand(
+  config: SshConnectionConfig, remoteCommand: string,
+  options: { env?: Record<string, string>; stdin?: string; timeoutMs?: number; maxBuffer?: number } = {},
+): Promise<SshCommandResult> {
+  if (!sshCommandJournal.getStore()) return runUnjournalledSshCommand(config, remoteCommand, options);
+  const target = await buildSshSpawnTarget({ spec: { ...config, remoteCwd: config.remoteWorkspacePath },
+    command: "sh", args: ["-c", remoteCommand], env: options.env ?? {}, cwd: null });
+  try {
+    return await spawnText(target.command, target.args, { stdin: options.stdin,
+      timeout: options.timeoutMs ?? 15_000, maxBuffer: options.maxBuffer ?? 1024 * 128 });
+  } finally { await target.cleanup(); }
+}
+
+const EVALUATION_SSH_SUPERVISOR = "\"\"\"Linux evaluation SSH supervisor: own/reap descendants, including setsid children.\n\nInvoked with an unpredictable invocation directory and the shell command. The\nseparate stop client and startup synchronize using flock. A cancellation before\nstartup leaves a tombstone, preventing a late SSH command from starting work.\nNo provider credentials or prompt contents are written into control state.\n\"\"\"\nimport ctypes\nimport fcntl\nimport json\nimport os\nfrom pathlib import Path\nimport signal\nimport subprocess\nimport sys\nimport time\n\nroot = Path(sys.argv[1])\nroot.mkdir(mode=0o700, parents=True, exist_ok=True)\n# Fail before launching work if descendant ownership is unavailable.\nif ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:\n    raise OSError(ctypes.get_errno(), 'PR_SET_CHILD_SUBREAPER failed')\nrequested = False\n\ndef request_stop(signum, frame):\n    global requested\n    requested = True\n\nfor signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):\n    signal.signal(signum, request_stop)\n\ndef write_state(name, value):\n    temporary = root / (name + '.tmp')\n    temporary.write_text(json.dumps(value))\n    temporary.replace(root / name)\n\nwith (root / 'lock').open('a') as lock:\n    fcntl.flock(lock, fcntl.LOCK_EX)\n    if (root / 'requested').exists():\n        write_state('stopped.json', {'stopped': True, 'reason': 'cancelled_before_start'})\n        sys.exit(125)\n    write_state('started.json', {'pid': os.getpid()})\n    child = subprocess.Popen(['sh', '-c', sys.argv[2]], start_new_session=True)\n    # The provider receives the original SSH stdin. The supervisor must not read it.\n\nleader_status = None\nstop_at = None\n\ndef descendants():\n    parents = {}\n    for entry in Path('/proc').iterdir():\n        if not entry.name.isdigit():\n            continue\n        try:\n            stat = (entry / 'stat').read_text().rsplit(')', 1)[1].split()\n            parents[int(entry.name)] = int(stat[1])\n        except FileNotFoundError:\n            continue\n    owned = {os.getpid()}\n    while True:\n        more = {pid for pid, parent in parents.items() if parent in owned}\n        if more <= owned:\n            return owned - {os.getpid()}\n        owned |= more\n\ndef signal_descendants(signum):\n    for pid in descendants():\n        # pidfd pins process identity across exit/reuse. Recheck parentage after\n        # opening it; process exit/reparenting is normal, other errors are fatal.\n        try:\n            fd = os.pidfd_open(pid)\n        except ProcessLookupError:\n            continue\n        try:\n            if pid in descendants():\n                signal.pidfd_send_signal(fd, signum)\n        except ProcessLookupError:\n            pass\n        finally:\n            os.close(fd)\n\ntry:\n    while True:\n        # Reap every child. Once all descendants are dead, the subreaper sees\n        # ECHILD; a process cannot fork after this proof has been obtained.\n        no_children = False\n        while True:\n            try:\n                pid, status = os.waitpid(-1, os.WNOHANG)\n            except ChildProcessError:\n                no_children = True\n                break\n            if pid == 0:\n                break\n            if pid == child.pid:\n                leader_status = os.waitstatus_to_exitcode(status)\n        if no_children:\n            cancelled = requested or (root / 'requested').exists()\n            write_state('stopped.json', {'stopped': True, 'exitCode': leader_status,\n                                         'reason': 'cancelled' if cancelled else 'exited'})\n            sys.exit(125 if cancelled else (leader_status if leader_status is not None and leader_status >= 0 else 1))\n        # Normal provider exit also drains background descendants before success.\n        if requested or (root / 'requested').exists() or leader_status is not None:\n            if stop_at is None:\n                stop_at = time.monotonic()\n            signal_descendants(signal.SIGKILL if time.monotonic() - stop_at >= 2 else signal.SIGTERM)\n        time.sleep(0.05)\nexcept BaseException as error:\n    if not isinstance(error, SystemExit):\n        # Never issue a stop receipt after an ownership/procfs failure.\n        write_state('error.json', {'error': type(error).__name__})\n    raise\n";
+const EVALUATION_SSH_STOP = "\"\"\"Request stop and return success only after the owning supervisor reaps all children.\"\"\"\nimport fcntl\nimport json\nfrom pathlib import Path\nimport sys\nimport time\n\nroot = Path(sys.argv[1])\nroot.mkdir(mode=0o700, parents=True, exist_ok=True)\nwith (root / 'lock').open('a') as lock:\n    fcntl.flock(lock, fcntl.LOCK_EX)\n    (root / 'requested').touch(mode=0o600)\n    if not (root / 'started.json').exists():\n        # The startup lock prevents a provider from slipping past this tombstone.\n        (root / 'stopped.json').write_text(json.dumps({'stopped': True, 'reason': 'cancelled_before_start'}))\ndeadline = time.monotonic() + 12\nwhile time.monotonic() < deadline:\n    try:\n        receipt = json.loads((root / 'stopped.json').read_text())\n        if receipt.get('stopped') is True:\n            print(json.dumps(receipt))\n            sys.exit(0)\n    except FileNotFoundError:\n        pass\n    if (root / 'error.json').exists():\n        sys.exit('Remote supervisor failed; termination is unverified')\n    time.sleep(0.05)\nsys.exit('Remote termination is unverified: no descendant-stop receipt within 12 seconds')\n";
+
+const ADMISSION_SSH_SUPERVISOR = "\"\"\"Trusted-host protocol prepended to the existing descendant supervisor/stop client.\n\nNo commands or secrets enter the journal. The runner UID is a cooperative trust\nboundary, not isolation from hostile sibling code. All mutations take epoch.lock;\nstart holds it until Popen returns. Uncertain consumption is never replayed.\n\"\"\"\nimport fcntl\nimport json\nimport os\nfrom pathlib import Path\nimport uuid\n\nFIELDS = ('epoch', 'companyId', 'agentId', 'runId', 'attemptId',\n          'environmentId', 'leaseId', 'invocationId')\n\n\ndef identity(value):\n    if not isinstance(value, str) or str(uuid.UUID(value)) != value:\n        raise ValueError('noncanonical_identity')\n    return value\n\n\ndef binding_from(value):\n    if not isinstance(value, dict) or set(value) != set(FIELDS):\n        raise ValueError('invalid_binding')\n    return {key: identity(value[key]) for key in FIELDS}\n\n\ndef durable_store(destination, value):\n    temporary = destination.with_name(destination.name + '.tmp')\n    with temporary.open('w') as file:\n        json.dump(value, file, sort_keys=True)\n        file.flush()\n        os.fsync(file.fileno())\n    temporary.replace(destination)\n    directory = os.open(destination.parent, os.O_DIRECTORY)\n    try:\n        os.fsync(directory)\n    finally:\n        os.close(directory)\n\n\ndef durable_directory(destination):\n    destination.mkdir(mode=0o700, exist_ok=True)\n    parent = os.open(destination.parent, os.O_DIRECTORY)\n    try:\n        os.fsync(parent)\n    finally:\n        os.close(parent)\n\n\ndef epoch_change(fence, operation, envelope):\n    # Root is an absolute, canonical path resolved from server-owned runner policy.\n    if not fence.is_absolute() or fence.resolve() != fence:\n        raise ValueError('noncanonical_fence_root')\n    if operation == 'initialize':\n        fence.mkdir(mode=0o700, parents=True, exist_ok=True)\n    with (fence / 'epoch.lock').open('a') as lock:\n        fcntl.flock(lock, fcntl.LOCK_EX)\n        epoch = identity(envelope['epoch'])\n        current = json.loads((fence / 'epoch.json').read_text()) if (fence / 'epoch.json').exists() else None\n        if operation == 'initialize':\n            if current is not None:\n                raise ValueError('already_initialized')\n        elif operation == 'takeover':\n            if current != {'epoch': identity(envelope['previousEpoch'])}:\n                raise ValueError('stale_takeover')\n        else:\n            raise ValueError('unknown_epoch_operation')\n        durable_directory(fence / 'epochs')\n        if (fence / 'epochs' / epoch).exists():\n            raise ValueError('epoch_reused')\n        # A crash between history and current update requires explicit recovery;\n        # retaining a consumed epoch is safer than permitting an ABA takeover.\n        durable_store(fence / 'epochs' / epoch, {'epoch': epoch})\n        durable_store(fence / 'epoch.json', {'epoch': epoch})\n\n\ndef attempt_directory(fence, binding, operation):\n    \"\"\"Caller holds epoch.lock, including across the eventual Popen.\n\n    Stop deliberately ignores current epoch so takeover cannot strand old work.\n    It may only touch the exact retained binding, and never proves stop itself.\n    \"\"\"\n    if operation == 'start' and json.loads((fence / 'epoch.json').read_text()) != {'epoch': binding['epoch']}:\n        raise ValueError('stale_start')\n    durable_directory(fence / 'attempts')\n    durable_directory(fence / 'invocations')\n    control = fence / 'attempts' / binding['attemptId']\n    durable_directory(control)\n    journal = control / 'binding.json'\n    invocation = fence / 'invocations' / binding['invocationId']\n    for record in (journal, invocation):\n        if record.exists() and json.loads(record.read_text()) != binding:\n            raise ValueError('binding_changed')\n    if operation == 'start' and (journal.exists() or invocation.exists()):\n        raise ValueError('attempt_consumed')\n    # Either partial journal is enough to deny replay after a crash.\n    if not invocation.exists():\n        durable_store(invocation, binding)\n    if not journal.exists():\n        durable_store(journal, binding)\n    return control\n\n\"\"\"Linux evaluation SSH supervisor: own/reap descendants, including setsid children.\n\nInvoked with an unpredictable invocation directory and the shell command. The\nseparate stop client and startup synchronize using flock. A cancellation before\nstartup leaves a tombstone, preventing a late SSH command from starting work.\nNo provider credentials or prompt contents are written into control state.\n\"\"\"\nimport ctypes\nimport fcntl\nimport json\nimport os\nfrom pathlib import Path\nimport signal\nimport subprocess\nimport sys\nimport time\n\nfence = Path(sys.argv[1])\nif not fence.is_absolute() or fence.resolve() != fence:\n    raise ValueError('noncanonical_fence_root')\nbinding = binding_from(json.loads(sys.argv[3]))\n# Descendant ownership must work before a launch authorization is consumed.\nif ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:\n    raise OSError(ctypes.get_errno(), 'PR_SET_CHILD_SUBREAPER failed')\nrequested = False\n\ndef request_stop(signum, frame):\n    global requested\n    requested = True\n\nfor signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):\n    signal.signal(signum, request_stop)\n\ndef write_state(name, value):\n    durable_store(root / name, {**value, 'binding': binding})\n\n# No implicit initialization. Delayed starts fail if the runner epoch is absent.\nwith (fence / 'epoch.lock').open('a') as lock:\n    fcntl.flock(lock, fcntl.LOCK_EX)\n    root = attempt_directory(fence, binding, 'start')\n    write_state('started.json', {'pid': os.getpid()})\n    child = subprocess.Popen(['sh', '-c', sys.argv[2]], start_new_session=True)\n    # Epoch takeover cannot interleave between the check and this Popen.\n    # stdin is inherited unchanged. Crash after consumption remains uncertain.\n\nleader_status = None\nstop_at = None\n\ndef descendants():\n    parents = {}\n    for entry in Path('/proc').iterdir():\n        if not entry.name.isdigit():\n            continue\n        try:\n            stat = (entry / 'stat').read_text().rsplit(')', 1)[1].split()\n            parents[int(entry.name)] = int(stat[1])\n        except FileNotFoundError:\n            continue\n    owned = {os.getpid()}\n    while True:\n        more = {pid for pid, parent in parents.items() if parent in owned}\n        if more <= owned:\n            return owned - {os.getpid()}\n        owned |= more\n\ndef signal_descendants(signum):\n    for pid in descendants():\n        # pidfd pins process identity across exit/reuse. Recheck parentage after\n        # opening it; process exit/reparenting is normal, other errors are fatal.\n        try:\n            fd = os.pidfd_open(pid)\n        except ProcessLookupError:\n            continue\n        try:\n            if pid in descendants():\n                signal.pidfd_send_signal(fd, signum)\n        except ProcessLookupError:\n            pass\n        finally:\n            os.close(fd)\n\ntry:\n    while True:\n        # Reap every child. Once all descendants are dead, the subreaper sees\n        # ECHILD; a process cannot fork after this proof has been obtained.\n        no_children = False\n        while True:\n            try:\n                pid, status = os.waitpid(-1, os.WNOHANG)\n            except ChildProcessError:\n                no_children = True\n                break\n            if pid == 0:\n                break\n            if pid == child.pid:\n                leader_status = os.waitstatus_to_exitcode(status)\n        if no_children:\n            cancelled = requested or (root / 'requested').exists()\n            write_state('stopped.json', {'stopped': True, 'exitCode': leader_status,\n                                         'reason': 'cancelled' if cancelled else 'exited'})\n            sys.exit(125 if cancelled else (leader_status if leader_status is not None and leader_status >= 0 else 1))\n        # Normal provider exit also drains background descendants before success.\n        if requested or (root / 'requested').exists() or leader_status is not None:\n            if stop_at is None:\n                stop_at = time.monotonic()\n            signal_descendants(signal.SIGKILL if time.monotonic() - stop_at >= 2 else signal.SIGTERM)\n        time.sleep(0.05)\nexcept BaseException as error:\n    if not isinstance(error, SystemExit):\n        # Never issue a stop receipt after an ownership/procfs failure.\n        write_state('error.json', {'error': type(error).__name__})\n    raise\n";
+const ADMISSION_SSH_STOP = "\"\"\"Trusted-host protocol prepended to the existing descendant supervisor/stop client.\n\nNo commands or secrets enter the journal. The runner UID is a cooperative trust\nboundary, not isolation from hostile sibling code. All mutations take epoch.lock;\nstart holds it until Popen returns. Uncertain consumption is never replayed.\n\"\"\"\nimport fcntl\nimport json\nimport os\nfrom pathlib import Path\nimport uuid\n\nFIELDS = ('epoch', 'companyId', 'agentId', 'runId', 'attemptId',\n          'environmentId', 'leaseId', 'invocationId')\n\n\ndef identity(value):\n    if not isinstance(value, str) or str(uuid.UUID(value)) != value:\n        raise ValueError('noncanonical_identity')\n    return value\n\n\ndef binding_from(value):\n    if not isinstance(value, dict) or set(value) != set(FIELDS):\n        raise ValueError('invalid_binding')\n    return {key: identity(value[key]) for key in FIELDS}\n\n\ndef durable_store(destination, value):\n    temporary = destination.with_name(destination.name + '.tmp')\n    with temporary.open('w') as file:\n        json.dump(value, file, sort_keys=True)\n        file.flush()\n        os.fsync(file.fileno())\n    temporary.replace(destination)\n    directory = os.open(destination.parent, os.O_DIRECTORY)\n    try:\n        os.fsync(directory)\n    finally:\n        os.close(directory)\n\n\ndef durable_directory(destination):\n    destination.mkdir(mode=0o700, exist_ok=True)\n    parent = os.open(destination.parent, os.O_DIRECTORY)\n    try:\n        os.fsync(parent)\n    finally:\n        os.close(parent)\n\n\ndef epoch_change(fence, operation, envelope):\n    # Root is an absolute, canonical path resolved from server-owned runner policy.\n    if not fence.is_absolute() or fence.resolve() != fence:\n        raise ValueError('noncanonical_fence_root')\n    if operation == 'initialize':\n        fence.mkdir(mode=0o700, parents=True, exist_ok=True)\n    with (fence / 'epoch.lock').open('a') as lock:\n        fcntl.flock(lock, fcntl.LOCK_EX)\n        epoch = identity(envelope['epoch'])\n        current = json.loads((fence / 'epoch.json').read_text()) if (fence / 'epoch.json').exists() else None\n        if operation == 'initialize':\n            if current is not None:\n                raise ValueError('already_initialized')\n        elif operation == 'takeover':\n            if current != {'epoch': identity(envelope['previousEpoch'])}:\n                raise ValueError('stale_takeover')\n        else:\n            raise ValueError('unknown_epoch_operation')\n        durable_directory(fence / 'epochs')\n        if (fence / 'epochs' / epoch).exists():\n            raise ValueError('epoch_reused')\n        # A crash between history and current update requires explicit recovery;\n        # retaining a consumed epoch is safer than permitting an ABA takeover.\n        durable_store(fence / 'epochs' / epoch, {'epoch': epoch})\n        durable_store(fence / 'epoch.json', {'epoch': epoch})\n\n\ndef attempt_directory(fence, binding, operation):\n    \"\"\"Caller holds epoch.lock, including across the eventual Popen.\n\n    Stop deliberately ignores current epoch so takeover cannot strand old work.\n    It may only touch the exact retained binding, and never proves stop itself.\n    \"\"\"\n    if operation == 'start' and json.loads((fence / 'epoch.json').read_text()) != {'epoch': binding['epoch']}:\n        raise ValueError('stale_start')\n    durable_directory(fence / 'attempts')\n    durable_directory(fence / 'invocations')\n    control = fence / 'attempts' / binding['attemptId']\n    durable_directory(control)\n    journal = control / 'binding.json'\n    invocation = fence / 'invocations' / binding['invocationId']\n    for record in (journal, invocation):\n        if record.exists() and json.loads(record.read_text()) != binding:\n            raise ValueError('binding_changed')\n    if operation == 'start' and (journal.exists() or invocation.exists()):\n        raise ValueError('attempt_consumed')\n    # Either partial journal is enough to deny replay after a crash.\n    if not invocation.exists():\n        durable_store(invocation, binding)\n    if not journal.exists():\n        durable_store(journal, binding)\n    return control\n\nimport sys\nimport time\nfence = Path(sys.argv[1])\nif not fence.is_absolute() or fence.resolve() != fence:\n    raise ValueError('noncanonical_fence_root')\nbinding = binding_from(json.loads(sys.argv[2]))\nwith (fence / 'epoch.lock').open('a') as lock:\n    fcntl.flock(lock, fcntl.LOCK_EX)\n    root = attempt_directory(fence, binding, 'stop')\n    durable_store(root / 'requested', {'binding': binding})\n    if not (root / 'started.json').exists():\n        # Journal consumption and tombstone share the launch lock; late replay\n        # cannot launch. This is exact pre-start prevention, not a process scan.\n        durable_store(root / 'stopped.json', {'stopped': True,\n                      'reason': 'cancelled_before_start', 'binding': binding})\ndeadline = time.monotonic() + 12\nwhile time.monotonic() < deadline:\n    try:\n        receipt = json.loads((root / 'stopped.json').read_text())\n        if receipt.get('stopped') is True and receipt.get('binding') == binding:\n            print(json.dumps(receipt))\n            sys.exit(0)\n    except FileNotFoundError:\n        pass\n    if (root / 'error.json').exists():\n        sys.exit('Remote supervisor failed; termination is unverified')\n    time.sleep(.05)\nsys.exit('Remote termination is unverified: no exact descendant-stop receipt')\n";
+const ADMISSION_SSH_EPOCH = "\"\"\"Trusted-host protocol prepended to the existing descendant supervisor/stop client.\n\nNo commands or secrets enter the journal. The runner UID is a cooperative trust\nboundary, not isolation from hostile sibling code. All mutations take epoch.lock;\nstart holds it until Popen returns. Uncertain consumption is never replayed.\n\"\"\"\nimport fcntl\nimport json\nimport os\nfrom pathlib import Path\nimport uuid\n\nFIELDS = ('epoch', 'companyId', 'agentId', 'runId', 'attemptId',\n          'environmentId', 'leaseId', 'invocationId')\n\n\ndef identity(value):\n    if not isinstance(value, str) or str(uuid.UUID(value)) != value:\n        raise ValueError('noncanonical_identity')\n    return value\n\n\ndef binding_from(value):\n    if not isinstance(value, dict) or set(value) != set(FIELDS):\n        raise ValueError('invalid_binding')\n    return {key: identity(value[key]) for key in FIELDS}\n\n\ndef durable_store(destination, value):\n    temporary = destination.with_name(destination.name + '.tmp')\n    with temporary.open('w') as file:\n        json.dump(value, file, sort_keys=True)\n        file.flush()\n        os.fsync(file.fileno())\n    temporary.replace(destination)\n    directory = os.open(destination.parent, os.O_DIRECTORY)\n    try:\n        os.fsync(directory)\n    finally:\n        os.close(directory)\n\n\ndef durable_directory(destination):\n    destination.mkdir(mode=0o700, exist_ok=True)\n    parent = os.open(destination.parent, os.O_DIRECTORY)\n    try:\n        os.fsync(parent)\n    finally:\n        os.close(parent)\n\n\ndef epoch_change(fence, operation, envelope):\n    # Root is an absolute, canonical path resolved from server-owned runner policy.\n    if not fence.is_absolute() or fence.resolve() != fence:\n        raise ValueError('noncanonical_fence_root')\n    if operation == 'initialize':\n        fence.mkdir(mode=0o700, parents=True, exist_ok=True)\n    with (fence / 'epoch.lock').open('a') as lock:\n        fcntl.flock(lock, fcntl.LOCK_EX)\n        epoch = identity(envelope['epoch'])\n        current = json.loads((fence / 'epoch.json').read_text()) if (fence / 'epoch.json').exists() else None\n        if operation == 'initialize':\n            if current is not None:\n                raise ValueError('already_initialized')\n        elif operation == 'takeover':\n            if current != {'epoch': identity(envelope['previousEpoch'])}:\n                raise ValueError('stale_takeover')\n        else:\n            raise ValueError('unknown_epoch_operation')\n        durable_directory(fence / 'epochs')\n        if (fence / 'epochs' / epoch).exists():\n            raise ValueError('epoch_reused')\n        # A crash between history and current update requires explicit recovery;\n        # retaining a consumed epoch is safer than permitting an ABA takeover.\n        durable_store(fence / 'epochs' / epoch, {'epoch': epoch})\n        durable_store(fence / 'epoch.json', {'epoch': epoch})\n\n\ndef attempt_directory(fence, binding, operation):\n    \"\"\"Caller holds epoch.lock, including across the eventual Popen.\n\n    Stop deliberately ignores current epoch so takeover cannot strand old work.\n    It may only touch the exact retained binding, and never proves stop itself.\n    \"\"\"\n    if operation == 'start' and json.loads((fence / 'epoch.json').read_text()) != {'epoch': binding['epoch']}:\n        raise ValueError('stale_start')\n    durable_directory(fence / 'attempts')\n    durable_directory(fence / 'invocations')\n    control = fence / 'attempts' / binding['attemptId']\n    durable_directory(control)\n    journal = control / 'binding.json'\n    invocation = fence / 'invocations' / binding['invocationId']\n    for record in (journal, invocation):\n        if record.exists() and json.loads(record.read_text()) != binding:\n            raise ValueError('binding_changed')\n    if operation == 'start' and (journal.exists() or invocation.exists()):\n        raise ValueError('attempt_consumed')\n    # Either partial journal is enough to deny replay after a crash.\n    if not invocation.exists():\n        durable_store(invocation, binding)\n    if not journal.exists():\n        durable_store(journal, binding)\n    return control\n\nimport sys\nepoch_change(Path(sys.argv[1]), sys.argv[2], json.loads(sys.argv[3]))\nprint(json.dumps({'epoch': identity(json.loads(sys.argv[3])['epoch']), 'fenceRoot': str(Path(sys.argv[1]))}))\n";
+
+// Internal host input only. Never parse this authority from adapter configuration.
+// The caller must durably journal this exact binding BEFORE building/launching SSH.
+export interface SshLaunchAuthorization {
+  fenceRoot: string;
+  binding: {
+    epoch: string;
+    companyId: string;
+    agentId: string;
+    runId: string;
+    attemptId: string;
+    environmentId: string;
+    leaseId: string;
+    invocationId: string;
+  };
+}
+
+function assertSshAdmissionEpoch(value: string): void {
+  if (typeof value !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value)) {
+    throw new Error("Invalid host-owned SSH admission identity");
+  }
+}
+
+function assertSshFenceRoot(value: string): void {
+  if (typeof value !== "string" || !path.posix.isAbsolute(value)
+    || path.posix.normalize(value) !== value || value === "/") {
+    throw new Error("Invalid host-owned SSH admission root");
+  }
+}
+
+function snapshotSshLaunchAuthorization(value: SshLaunchAuthorization): SshLaunchAuthorization {
+  const fields = ["epoch", "companyId", "agentId", "runId", "attemptId", "environmentId", "leaseId", "invocationId"] as const;
+  assertSshFenceRoot(value?.fenceRoot);
+  if (!value.binding || Object.keys(value.binding).length !== fields.length) {
+    throw new Error("Invalid host-owned SSH launch authorization");
+  }
+  for (const field of fields) assertSshAdmissionEpoch(value.binding[field]);
+  return { fenceRoot: value.fenceRoot, binding: { ...value.binding } };
+}
+
+export async function updateSshAdmissionEpoch(input: {
+  spec: SshRemoteExecutionSpec;
+  fenceRoot: string;
+  epoch: string;
+  previousEpoch?: string;
+}): Promise<{ epoch: string; fenceRoot: string }> {
+  assertSshFenceRoot(input.fenceRoot);
+  assertSshAdmissionEpoch(input.epoch);
+  if (input.previousEpoch !== undefined) assertSshAdmissionEpoch(input.previousEpoch);
+  const operation = input.previousEpoch === undefined ? "initialize" : "takeover";
+  const envelope = { epoch: input.epoch, ...(input.previousEpoch === undefined ? {} : { previousEpoch: input.previousEpoch }) };
+  const result = await runUnjournalledSshCommand(input.spec, ["python3", "-I", "-c", shellQuote(ADMISSION_SSH_EPOCH),
+    shellQuote(input.fenceRoot), operation, shellQuote(JSON.stringify(envelope))].join(" "), { timeoutMs: 20_000 }, true);
+  const ack = JSON.parse(result.stdout);
+  if (ack.epoch !== input.epoch || ack.fenceRoot !== input.fenceRoot || Object.keys(ack).length !== 2)
+    throw new Error("Remote epoch acknowledgement does not match host policy");
+  return { epoch: ack.epoch, fenceRoot: ack.fenceRoot };
+}
+
 export async function buildSshSpawnTarget(input: {
   spec: SshRemoteExecutionSpec;
+  admission?: SshLaunchAuthorization;
   command: string;
   args: string[];
   env: Record<string, string>;
+  cwd?: null;
 }): Promise<{
   command: string;
   args: string[];
   cleanup: () => Promise<void>;
+  stopRemote: () => Promise<void>;
+  sshInvocationId: string;
 }> {
+  // Snapshot before the first await: caller mutation cannot alter journal identity.
+  input = { ...input, spec: { ...input.spec }, args: [...input.args], env: { ...input.env },
+    admission: input.admission === undefined ? undefined : snapshotSshLaunchAuthorization(input.admission) };
+  const journal = sshCommandJournal.getStore();
+  if (journal && input.admission) throw new Error("Competing SSH launch ownership");
+  const payload: SshCommandPayload = { command: input.command, args: [...input.args], env: { ...input.env },
+    cwd: input.cwd === null ? null : input.spec.remoteCwd };
+  const admission = input.admission === undefined
+    ? journal ? snapshotSshLaunchAuthorization(await journal.authorize(input.spec,
+      createHash("sha256").update(JSON.stringify(payload)).digest("hex"), input.env, structuredClone(payload))) : undefined
+    : snapshotSshLaunchAuthorization(input.admission);
   for (const key of Object.keys(input.env)) {
     if (!isValidShellEnvKey(key)) {
       throw new Error(`Invalid SSH environment variable key: ${key}`);
     }
+  }
+  if (journal?.spawnProtected && admission) {
+    // No key material, legacy SSH authentication or remote supervisor script is
+    // prepared when protected transport owns this command.
+    const target = await journal.spawnProtected(admission, structuredClone(payload));
+    return { ...target, cleanup: async () => {
+      try { await target.cleanup(); } finally { journal.settled?.(admission); }
+    } };
   }
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [...auth.args];
   const envArgs = Object.entries(input.env)
     .filter((entry): entry is [string, string] => typeof entry[1] === "string")
     .map(([key, value]) => `${key}=${shellQuote(value)}`);
-  const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
+  const sshInvocationId = admission?.binding.invocationId ?? randomUUID();
+  const invocationDir = path.posix.join(input.spec.remoteCwd, ".paperclip-runtime", "process-control", sshInvocationId);
+  // Profiles, cwd and environment are executable setup too. Keep them inside
+  // the subreaper rather than executing them before the fenced command.
+  const providerCommand = [
+    'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
+    'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
+    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
+    'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+    ...(input.cwd === null ? [] : [`cd ${shellQuote(input.spec.remoteCwd)}`]),
+    `exec ${envArgs.length ? `env ${envArgs.join(" ")} ` : ""}${[shellQuote(input.command), ...input.args.map(shellQuote)].join(" ")}`,
+  ].join(" && ");
+  // Linux/Python are explicit prerequisites of these pinned evaluation runners.
+  const remoteCommandParts = admission
+    ? ["python3", "-I", "-c", shellQuote(ADMISSION_SSH_SUPERVISOR), shellQuote(admission.fenceRoot),
+      shellQuote(providerCommand), shellQuote(JSON.stringify(admission.binding))].join(" ")
+    : ["python3", "-I", "-c", shellQuote(EVALUATION_SSH_SUPERVISOR), shellQuote(invocationDir), shellQuote(providerCommand)].join(" ");
+  let stopPromise: Promise<void> | undefined;
+  const stopRemote = () => {
+    if (!stopPromise) {
+      stopPromise = runUnjournalledSshCommand(input.spec,
+        (admission
+          ? ["python3", "-I", "-c", shellQuote(ADMISSION_SSH_STOP), shellQuote(admission.fenceRoot), shellQuote(JSON.stringify(admission.binding))]
+          : ["python3", "-I", "-c", shellQuote(EVALUATION_SSH_STOP), shellQuote(invocationDir)]).join(" "),
+        { timeoutMs: 20_000 }, true).then(async ({ stdout }) => {
+          const receipt = JSON.parse(stdout);
+          if (receipt.stopped !== true || (admission && (
+            !receipt.binding || Object.keys(receipt.binding).length !== Object.keys(admission.binding).length ||
+            (Object.keys(admission.binding) as Array<keyof SshLaunchAuthorization["binding"]>)
+              .some((key) => receipt.binding[key] !== admission.binding[key])
+          ))) throw new Error("Remote descendant stop is unverified");
+          if (journal && admission) await journal.stopped(admission);
+        }).catch((error) => { stopPromise = undefined; throw error; });
+    }
+    return stopPromise;
+  };
   // Source the login profiles first, then run `env KEY=VAL cmd` so
   // user-supplied identity overrides win over anything a profile re-exports.
   // The SSH target is an operator-configured host, not a Paperclip sandbox
@@ -1372,16 +1576,7 @@ export async function buildSshSpawnTarget(input: {
   // .bash_profile typically sources .bashrc itself; only source .bashrc
   // directly when no .bash_profile exists, so a host that adds nvm in
   // .bashrc still resolves node without a double-run of the setup.
-  const remoteScript = [
-    'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
-    `cd ${shellQuote(input.spec.remoteCwd)}`,
-    envArgs.length > 0
-      ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
-      : `exec ${remoteCommandParts}`,
-  ].join(" && ");
+  const remoteScript = `exec ${remoteCommandParts}`;
 
   sshArgs.push(
     "-p",
@@ -1393,8 +1588,22 @@ export async function buildSshSpawnTarget(input: {
   return {
     command: "ssh",
     args: sshArgs,
-    cleanup: auth.cleanup,
+    stopRemote,
+    sshInvocationId,
+    cleanup: async () => {
+      try { await stopRemote(); } finally {
+        if (journal && admission) journal.settled?.(admission);
+        await auth.cleanup();
+      }
+    },
   };
+}
+
+export async function stopSshAdmissionCommand(spec: SshRemoteExecutionSpec, authorization: SshLaunchAuthorization) {
+  // This builds no executable child. The stop protocol can reconcile retained
+  // old-epoch identities and tombstone commands whose launch response was lost.
+  const target = await sshCommandJournal.run(undefined, () => buildSshSpawnTarget({ spec, admission: authorization, command: "true", args: [], env: {} }));
+  await target.cleanup();
 }
 
 export async function syncDirectoryToSsh(input: {
@@ -1406,15 +1615,8 @@ export async function syncDirectoryToSsh(input: {
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
 }): Promise<void> {
-  const auth = await createSshAuthArgs(input.spec);
-  const sshArgs = [
-    ...auth.args,
-    "-p",
-    String(input.spec.port),
-    `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(`mkdir -p ${shellQuote(input.remoteDir)} && tar -xf - -C ${shellQuote(input.remoteDir)}`)}`,
-  ];
-
+  const transport = await buildSshStreamTarget(input.spec, `mkdir -p ${shellQuote(input.remoteDir)} && tar -xf - -C ${shellQuote(input.remoteDir)}`);
+  const sshArgs = transport.args;
   // tar's archive size isn't known until tar finishes, so estimate it from the
   // local file sizes and clamp the reported percent to 99% until the pipe closes.
   // The estimate walk runs concurrently with the transfer so it never delays the
@@ -1449,7 +1651,7 @@ export async function syncDirectoryToSsh(input: {
       stdio: ["ignore", "pipe", "pipe"],
       env: tarSpawnEnv(),
     });
-    const ssh = spawn("ssh", sshArgs, {
+    const ssh = spawn(transport.command, sshArgs, {
       stdio: ["pipe", "ignore", "pipe"],
     });
 
@@ -1466,11 +1668,11 @@ export async function syncDirectoryToSsh(input: {
         return;
       }
       settled = true;
-      if ((tarExitCode ?? 0) !== 0) {
+      if (tarExitCode !== 0) {
         reject(new Error(tarStderr.trim() || `tar exited with code ${tarExitCode ?? -1}`));
         return;
       }
-      if ((sshExitCode ?? 0) !== 0) {
+      if (sshExitCode !== 0) {
         reject(new Error(sshStderr.trim() || `ssh exited with code ${sshExitCode ?? -1}`));
         return;
       }
@@ -1482,9 +1684,7 @@ export async function syncDirectoryToSsh(input: {
         return;
       }
       settled = true;
-      tar.kill("SIGTERM");
-      ssh.kill("SIGTERM");
-      reject(error);
+      void Promise.all([terminateTransferChild(tar), terminateTransferChild(ssh)]).then(() => reject(error), reject);
     };
 
     if (progress) {
@@ -1502,6 +1702,7 @@ export async function syncDirectoryToSsh(input: {
 
     tar.on("error", fail);
     ssh.on("error", fail);
+    ssh.stdin?.on("error", fail);
     tar.on("close", (code) => {
       tarExited = true;
       tarExitCode = code;
@@ -1512,7 +1713,7 @@ export async function syncDirectoryToSsh(input: {
       sshExitCode = code;
       maybeFinish();
     });
-    }).finally(auth.cleanup);
+    }).finally(transport.cleanup);
     await progress?.finish();
   } catch (error) {
     await progress?.fail();
@@ -1529,20 +1730,22 @@ export async function syncDirectoryFromSsh(input: {
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
 }): Promise<void> {
-  const auth = await createSshAuthArgs(input.spec);
   const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
+  await fs.mkdir(input.localDir, { recursive: true });
+  const recoveryBaseline = sshCommandJournal.getStore()
+    ? serializeDirectorySnapshot(await captureDirectorySnapshot(input.localDir,
+      { exclude: [...input.exclude ?? [], ...input.preserveLocalEntries ?? []] })) : undefined;
+  const restoreState = await requireExecutionStateRestoration("workspace", {
+    operation: "directory_copy_back", localDir: input.localDir, remoteDir: input.remoteDir, stagingDir,
+    baselineSnapshot: recoveryBaseline,
+  });
+  let applied = false;
   const remoteTarScript = [
     `cd ${shellQuote(input.remoteDir)}`,
     `tar ${[...tarExcludeArgs(input.exclude).map(shellQuote), "-cf", "-", "."].join(" ")}`,
   ].join(" && ");
-  const sshArgs = [
-    ...auth.args,
-    "-p",
-    String(input.spec.port),
-    `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(remoteTarScript)}`,
-  ];
-
+  const transport = await buildSshStreamTarget(input.spec, remoteTarScript);
+  const sshArgs = transport.args;
   // The remote tar size isn't known locally, so probe the remote directory for
   // an estimate (clamped to 99%). The probe runs concurrently with the transfer
   // so its round-trip never delays the restore; when it is unavailable we report
@@ -1553,14 +1756,15 @@ export async function syncDirectoryFromSsh(input: {
       phase: "Restoring",
       direction: "from",
       label: input.progressLabel,
-      totalBytes: probeRemoteDirSize({ spec: input.spec, remoteDir: input.remoteDir }),
+      totalBytes: sshCommandJournal.getStore() ? Promise.resolve(null) : probeRemoteDirSize({ spec: input.spec, remoteDir: input.remoteDir }),
       estimated: true,
     })
     : null;
 
   try {
+    await restoreState(async () => {
     await new Promise<void>((resolve, reject) => {
-      const ssh = spawn("ssh", sshArgs, {
+      const ssh = spawn(transport.command, sshArgs, {
         stdio: ["ignore", "pipe", "pipe"],
       });
       const tar = spawn("tar", ["-xf", "-", "-C", stagingDir], {
@@ -1579,11 +1783,11 @@ export async function syncDirectoryFromSsh(input: {
       const maybeFinish = () => {
         if (settled || !sshExited || !tarExited) return;
         settled = true;
-        if ((sshExitCode ?? 0) !== 0) {
+        if (sshExitCode !== 0) {
           reject(new Error(sshStderr.trim() || `ssh exited with code ${sshExitCode ?? -1}`));
           return;
         }
-        if ((tarExitCode ?? 0) !== 0) {
+        if (tarExitCode !== 0) {
           reject(new Error(tarStderr.trim() || `tar exited with code ${tarExitCode ?? -1}`));
           return;
         }
@@ -1593,9 +1797,7 @@ export async function syncDirectoryFromSsh(input: {
       const fail = (error: Error) => {
         if (settled) return;
         settled = true;
-        ssh.kill("SIGTERM");
-        tar.kill("SIGTERM");
-        reject(error);
+        void Promise.all([terminateTransferChild(tar), terminateTransferChild(ssh)]).then(() => reject(error), reject);
       };
 
       if (progress) {
@@ -1613,6 +1815,7 @@ export async function syncDirectoryFromSsh(input: {
 
       ssh.on("error", fail);
       tar.on("error", fail);
+      tar.stdin?.on("error", fail);
       ssh.on("close", (code) => {
         sshExited = true;
         sshExitCode = code;
@@ -1626,14 +1829,19 @@ export async function syncDirectoryFromSsh(input: {
     });
     await progress?.finish();
 
-    await clearLocalDirectory(input.localDir, input.preserveLocalEntries);
-    await copyDirectoryContents(stagingDir, input.localDir);
+    await withDirectoryMergeLock(input.localDir, () => withExecutionStateMutation(async () => {
+      await clearLocalDirectory(input.localDir, input.preserveLocalEntries);
+      await copyDirectoryContents(stagingDir, input.localDir);
+      await syncRestoredDirectory(input.localDir);
+    }));
+    applied = true;
+    });
   } catch (error) {
     await progress?.fail();
     throw error;
   } finally {
-    await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
-    await auth.cleanup();
+    if (applied || !sshCommandJournal.getStore()) await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+    await transport.cleanup();
   }
 }
 
@@ -1759,6 +1967,7 @@ async function restoreWorkspaceRootFromSsh(input: {
   const remoteDir = input.remoteDir;
   if (input.baselineSnapshot) {
     const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
+    let applied = false;
     const importedRef = input.restoreGitHistory
       ? `refs/paperclip/ssh-sync/imported/${randomUUID()}`
       : null;
@@ -1796,6 +2005,8 @@ async function restoreWorkspaceRootFromSsh(input: {
           }
           : undefined,
       });
+      await syncRestoredDirectory(input.localDir);
+      applied = true;
     } finally {
       if (importedRef) {
         await runLocalGit(input.localDir, ["update-ref", "-d", importedRef], {
@@ -1803,7 +2014,7 @@ async function restoreWorkspaceRootFromSsh(input: {
           maxBuffer: 16 * 1024,
         }).catch(() => undefined);
       }
-      await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+      if (applied || !sshCommandJournal.getStore()) await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
     }
     return;
   }

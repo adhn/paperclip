@@ -1,0 +1,298 @@
+name: Paperclip image PVC clone rehearsal
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [paperclip-concurrency-admission]
+    paths:
+      - clusters/homelab/infrastructure/paperclip-evaluation/images/inputs.json
+      - clusters/homelab/infrastructure/paperclip-evaluation/images/controller/**
+      - clusters/homelab/infrastructure/paperclip-evaluation/scripts/prepare-controller.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/scripts/patch-ssh-admission.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/scripts/patch-native-admission.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/image_pvc_clone.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_image_pvc_clone.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_postgres_socket_disposable.py
+      - .github/workflows/paperclip-image-pvc-rehearsal.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paperclip-image-pvc-rehearsal
+  # Preserve the expensive exact-image rehearsal and its failure diagnostics.
+  # GitHub retains only the newest pending candidate in this group.
+  cancel-in-progress: false
+
+# Independent source/transport checks remain in paperclip-admission-fixtures.
+# This job only builds/reuses an attested inactive image and tests synthetic
+# state on disposable infrastructure. All relevant workflows must pass review.
+jobs:
+  image-pvc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: read
+    env:
+      PACKAGE: clusters/homelab/infrastructure/paperclip-evaluation
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Pull exact rehearsal images with read-only registry access before building
+        env:
+          REGISTRY_READ_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+          printf '%s' "$REGISTRY_READ_TOKEN" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+          docker pull ghcr.io/adhn/paperclip-eval/controller@sha256:8bd2d8ccef956c777ea6eefa2004152632e0781706031e8cd42ef89bdd7c50ca
+          docker pull postgres:18-bookworm@sha256:afc7e2d441324c0388fa80c3d24f733b4194a4eb7f47dd8ee2b08eb1a24a647c
+      - name: Verify exact PostgreSQL entrypoint sockets in bounded disposable containers
+        run: |
+          python3 "$PACKAGE/protected-execution/test_postgres_socket_disposable.py" --evidence "$RUNNER_TEMP/postgres-socket"
+      - name: Save PostgreSQL socket reproduction diagnostics
+        if: always()
+        run: |
+          for name in result.json cleanup.json bad.log fixed.log; do
+            if test -f "$RUNNER_TEMP/postgres-socket/$name"; then cat "$RUNNER_TEMP/postgres-socket/$name"; fi
+          done
+      - name: Reserve disposable hosted-runner disk for the full production build
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Same disposable-VM cleanup as the accepted controller build workflow.
+          sudo rm -rf -- /usr/local/lib/android /opt/ghc /usr/local/.ghcup /usr/share/dotnet /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Reconstruct the exact candidate without changing production preparation
+        run: |
+          python3 "$PACKAGE/scripts/prepare-controller.py" "$RUNNER_TEMP/controller"
+          python3 "$PACKAGE/scripts/patch-ssh-admission.py" "$RUNNER_TEMP/controller"
+          python3 "$PACKAGE/scripts/patch-native-admission.py" "$RUNNER_TEMP/controller"
+          # TypeScript 7 uses Go; constrain build GC as in the full typecheck.
+          # This affects only the disposable build stage, never runtime config.
+          python3 - "$RUNNER_TEMP/controller/Dockerfile.evaluation" <<'PYBUILD'
+          from pathlib import Path
+          import sys
+          recipe = Path(sys.argv[1])
+          source = recipe.read_text()
+          baseline = 'FROM runner-build AS build\n'
+          assert source.count(baseline) == 1
+          recipe.write_text(source.replace(baseline, baseline + 'ENV GOMEMLIMIT=1GiB GOGC=10 GOMAXPROCS=1\n'))
+          # Same supported compiler mode as the measured full server check.
+          # Change only this disposable build context, never attested overlays.
+          import json
+          manifest = recipe.parent / 'server/package.json'
+          value = json.loads(manifest.read_text())
+          command = value['scripts']['build']
+          assert command.count('&& tsc &&') == 1
+          value['scripts']['build'] = command.replace('&& tsc &&', '&& tsc --singleThreaded &&')
+          manifest.write_text(json.dumps(value, indent=2) + '\n')
+          PYBUILD
+      - name: Bind the cache to the actual disposable build recipe
+        id: image-recipe
+        run: |
+          python3 - <<'PYRECIPE'
+          import hashlib,json,os,subprocess
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])/'controller'
+          hashes={name:hashlib.sha256((root/name).read_bytes()).hexdigest() for name in ['Dockerfile.evaluation','server/package.json']}
+          key=hashlib.sha256(json.dumps(hashes,sort_keys=True).encode()).hexdigest()
+          # Hash tracked build inputs only. Importing assemble.py creates pyc
+          # files whose checkout-time headers must never invalidate this key.
+          package=os.environ['PACKAGE']+'/'
+          names=subprocess.check_output(['git','ls-files','-z','--',package+'images/inputs.json',package+'images/controller',package+'scripts/prepare-controller.py',package+'scripts/patch-*.py']).decode().strip('\0').split('\0')
+          assert names and all(names)
+          inputs={name:hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in sorted(names)}
+          source=hashlib.sha256(json.dumps(inputs,sort_keys=True).encode()).hexdigest()
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as out:
+            out.write('sha='+key+'\nsource='+source+'\n')
+          PYRECIPE
+      - name: Restore an exact-source disposable compiled image
+        id: candidate-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/pc-candidate-cache
+          key: pc-image-production-amd64-v3-${{ runner.os }}-${{ steps.image-recipe.outputs.sha }}-${{ steps.image-recipe.outputs.source }}
+      # A one-time explicit reuse pin for the fully built/guarded 3dc1426 image
+      # (run 39449824727). All 88 tracked build inputs and the actual modified
+      # recipe must match before consulting its old pyc-sensitive cache key.
+      # A miss builds normally; this cannot reuse a changed controller candidate.
+      - name: Restore independently verified unchanged prior build
+        id: verified-prior-cache
+        if: steps.candidate-cache.outputs.cache-hit != 'true' && steps.image-recipe.outputs.source == '904d9260254b9474d16660ee88d8e5bb005f24f634e6aba1c8311bb4edd720ea' && steps.image-recipe.outputs.sha == 'cdb8c3c75072878bd9ae0b4026c3d41098c1cc2cf864314a0fb7339a139baa4b'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/pc-candidate-cache
+          key: pc-image-production-amd64-v2-Linux-cdb8c3c75072878bd9ae0b4026c3d41098c1cc2cf864314a0fb7339a139baa4b-93f20d1fc038b9eb04b049b15bc7069d99b2c001cf84a556795d00ce6359dc1a
+      - name: Validate and load the exact-source cached image
+        if: steps.candidate-cache.outputs.cache-hit == 'true' || steps.verified-prior-cache.outputs.cache-hit == 'true'
+        env:
+          SOURCE_KEY: ${{ steps.candidate-cache.outputs.cache-hit == 'true' && steps.candidate-cache.outputs.cache-primary-key || steps.verified-prior-cache.outputs.cache-primary-key }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCACHE'
+          import hashlib,json,os,subprocess
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])/'pc-candidate-cache'
+          meta=json.loads((root/'metadata.json').read_text())
+          assert meta['key']==os.environ['SOURCE_KEY']
+          with (root/'image.tar.zst').open('rb') as f:
+            assert hashlib.file_digest(f,'sha256').hexdigest()==meta['archiveSha256']
+          PYCACHE
+          zstd -dc "$RUNNER_TEMP/pc-candidate-cache/image.tar.zst" | docker load
+          python3 - <<'PYCACHE'
+          import json,os,subprocess
+          from pathlib import Path
+          meta=json.loads((Path(os.environ['RUNNER_TEMP'])/'pc-candidate-cache/metadata.json').read_text())
+          image=json.loads(subprocess.check_output(['docker','image','inspect','paperclip-admission-candidate']))[0]
+          assert image['Id']==meta['imageId']
+          assert image['Config']['Labels']['io.paperclip.fixture.source-key']==os.environ['SOURCE_KEY']
+          print('Exact-source cached image verified:',image['Id'])
+          PYCACHE
+      - name: Build complete candidate production image without publishing
+        if: steps.candidate-cache.outputs.cache-hit != 'true' && steps.verified-prior-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=$(python3 -c 'import json,os; print(json.load(open(os.environ["PACKAGE"]+"/images/inputs.json"))["sourceRevision"])')
+          docker buildx build --load --platform linux/amd64 --target production --build-arg "PAPERCLIP_BUILD_COMMIT=$revision" --label io.paperclip.admission=candidate-inactive --label "io.paperclip.fixture.source-key=${{ steps.candidate-cache.outputs.cache-primary-key }}" -f "$RUNNER_TEMP/controller/Dockerfile.evaluation" -t paperclip-admission-candidate "$RUNNER_TEMP/controller"
+      - name: Verify production controller-local CLI guards
+        run: |
+          docker run --rm --user 1000:1000 --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint sh paperclip-admission-candidate -c 'for cli in codex claude gemini; do "$cli" --version; rc=$?; test "$rc" = 126 || exit 1; done'
+      - name: Verify production startup refuses missing policy before database access
+        shell: bash
+        run: |
+          set +e
+          docker run --rm --network none --user 1000:1000 --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m --tmpfs /paperclip:rw,nosuid,uid=1000,gid=1000,size=64m \
+            -e DATABASE_URL=postgresql://fixture:fixture@127.0.0.1:1/fixture \
+            -e PAPERCLIP_MIGRATION_AUTO_APPLY=false -e PAPERCLIP_TELEMETRY_ENABLED=false \
+            --entrypoint timeout paperclip-admission-candidate 30 node --import /app/server/node_modules/tsx/dist/loader.mjs /app/server/dist/index.js > "$RUNNER_TEMP/admission-startup.log" 2>&1
+          rc=$?
+          set -e
+          cat "$RUNNER_TEMP/admission-startup.log"
+          test "$rc" = 1
+          python3 - "$RUNNER_TEMP/admission-startup.log" <<'PYSTART'
+          from pathlib import Path
+          import sys
+          log = Path(sys.argv[1]).read_text()
+          assert 'admission_bootstrap_policy_required' in log, log
+          assert 'ECONNREFUSED' not in log, log
+          PYSTART
+      - name: Verify exact image migration modules before expensive imports
+        shell: bash
+        run: |
+          set -euo pipefail
+          for image in ghcr.io/adhn/paperclip-eval/controller@sha256:8bd2d8ccef956c777ea6eefa2004152632e0781706031e8cd42ef89bdd7c50ca paperclip-admission-candidate; do
+            docker run --rm --network none --user 1000:1000 --read-only --cap-drop ALL --security-opt no-new-privileges \
+              --memory 256m --cpus 1 --pids-limit 64 --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+              --entrypoint timeout "$image" 60 node --import /app/server/node_modules/tsx/dist/loader.mjs --input-type=module \
+              -e 'const db=await import("/app/packages/db/src/client.ts"); for(const name of ["applyPendingMigrations","inspectMigrations"])if(typeof db[name]!=="function")throw Error("fixture_migration_export_missing"); console.log("exact packaged migration module verified");'
+          done
+          docker run --rm --network none --user 1000:1000 --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --memory 256m --cpus 1 --pids-limit 64 --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --entrypoint timeout paperclip-admission-candidate 60 node --import /app/server/node_modules/tsx/dist/loader.mjs --input-type=module \
+            -e 'const policy=await import("/app/server/dist/services/execution-admission-bootstrap.js"); if(typeof policy.loadProductionAdmissionPolicy!=="function")throw Error("fixture_policy_export_missing"); console.log("exact packaged policy module verified; no database opened or migration called");'
+      - name: Retire disposable build cache before nested image imports
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx prune --all --force
+          docker system df
+          df -h /
+      - name: Export the verified compiled image for disposable fixture retries
+        if: steps.candidate-cache.outputs.cache-hit != 'true' && steps.verified-prior-cache.outputs.cache-hit != 'true'
+        env:
+          SOURCE_KEY: ${{ steps.candidate-cache.outputs.cache-primary-key }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pc-candidate-cache"
+          docker save paperclip-admission-candidate | zstd -T2 -3 -o "$RUNNER_TEMP/pc-candidate-cache/image.tar.zst"
+          python3 - <<'PYCACHE'
+          import hashlib,json,os,subprocess
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])/'pc-candidate-cache'
+          image=json.loads(subprocess.check_output(['docker','image','inspect','paperclip-admission-candidate']))[0]
+          assert image['Config']['Labels']['io.paperclip.fixture.source-key']==os.environ['SOURCE_KEY']
+          with (root/'image.tar.zst').open('rb') as f:
+            checksum=hashlib.file_digest(f,'sha256').hexdigest()
+          (root/'metadata.json').write_text(json.dumps({'key':os.environ['SOURCE_KEY'],'imageId':image['Id'],'archiveSha256':checksum}))
+          print('Verified disposable image export:',image['Id'])
+          PYCACHE
+      - name: Save disposable compiled image before the real fixture runs
+        if: steps.candidate-cache.outputs.cache-hit != 'true' && steps.verified-prior-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/pc-candidate-cache
+          key: ${{ steps.candidate-cache.outputs.cache-primary-key }}
+      - name: Free the uploaded archive before nested image imports
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f -- "$RUNNER_TEMP/pc-candidate-cache/image.tar.zst"
+          python3 - <<'PYDISK'
+          import os
+          usage=os.statvfs(os.environ['RUNNER_TEMP'])
+          free=usage.f_bavail*usage.f_frsize
+          print('Fixture free bytes before kind:',free)
+          assert free >= 24*1024**3, 'disposable_fixture_disk_headroom_required'
+          PYDISK
+      - name: Verify real controller-image PVC migration restart and coordinated rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 2 https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64 -o "$RUNNER_TEMP/kind"
+          echo "517ab7fc89ddeed5fa65abf71530d90648d9638ef0c4cde22c2c11f8097b8889  $RUNNER_TEMP/kind" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/kind"
+          curl -fL --retry 2 https://raw.githubusercontent.com/projectcalico/calico/v3.33.0/manifests/calico.yaml -o "$RUNNER_TEMP/calico.yaml"
+          python3 "$PACKAGE/protected-execution/test_image_pvc_clone.py"
+          python3 "$PACKAGE/protected-execution/image_pvc_clone.py" --kind "$RUNNER_TEMP/kind" --calico-source "$RUNNER_TEMP/calico.yaml" --evidence "$RUNNER_TEMP/image-pvc-clone" --candidate paperclip-admission-candidate
+          for name in result.json cleanup.json kubernetes-version.json network-targets.json source-facts.json pvcs.json pvs.json kubelet-effective-config.json image-bindings.json pod-image-bindings.json fixture-policy.json host-image-cleanup.json; do
+            printf '%s\n' "$name"
+            cat "$RUNNER_TEMP/image-pvc-clone/$name"
+          done
+      - name: Remove exact disposable image PVC fixture after interruption
+        if: always()
+        shell: bash
+        run: |
+          if test -x "$RUNNER_TEMP/kind"; then
+            "$RUNNER_TEMP/kind" delete cluster --name pc-image-pvc-clone-disposable --kubeconfig "$RUNNER_TEMP/image-pvc-clone/kubeconfig"
+          fi
+          test -z "$(docker ps -aq --filter label=io.x-k8s.kind.cluster=pc-image-pvc-clone-disposable)"
+          if test -d "$RUNNER_TEMP/image-pvc-clone"; then
+            for file in "$RUNNER_TEMP/image-pvc-clone"/*.log "$RUNNER_TEMP/image-pvc-clone"/failure-*.json; do
+              if test -f "$file"; then printf '%s\n' "$file"; cat "$file"; fi
+            done
+          fi
+      - name: Retain bounded synthetic rehearsal diagnostics without kubeconfig or keys
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-pvc-rehearsal-${{ github.run_id }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/image-pvc-clone/*.log
+            ${{ runner.temp }}/image-pvc-clone/result.json
+            ${{ runner.temp }}/image-pvc-clone/cleanup.json
+            ${{ runner.temp }}/image-pvc-clone/failure-*.json
+            ${{ runner.temp }}/image-pvc-clone/image-bindings.json
+            ${{ runner.temp }}/image-pvc-clone/pod-image-bindings.json
+            ${{ runner.temp }}/image-pvc-clone/host-image-cleanup.json
+            ${{ runner.temp }}/image-pvc-clone/pvcs.json
+            ${{ runner.temp }}/image-pvc-clone/pvs.json
+            ${{ runner.temp }}/image-pvc-clone/source-facts.json
+            ${{ runner.temp }}/image-pvc-clone/fixture-policy.json
+            ${{ runner.temp }}/image-pvc-clone/*-runtime-budget.json
+            ${{ runner.temp }}/image-pvc-clone/*-import*.json
+            ${{ runner.temp }}/image-pvc-clone/*-import.stdout
+            ${{ runner.temp }}/image-pvc-clone/*-import.stderr
+            ${{ runner.temp }}/image-pvc-clone/*-diagnostics.json
+            ${{ runner.temp }}/image-pvc-clone/*-diagnostic-*.stdout
+            ${{ runner.temp }}/image-pvc-clone/*-diagnostic-*.stderr

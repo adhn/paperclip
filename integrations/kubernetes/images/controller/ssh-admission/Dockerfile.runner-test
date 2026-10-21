@@ -1,0 +1,15 @@
+# Test-only rootless SSH server, without a provider CLI or provider credentials.
+FROM node:24.15.0-trixie-slim@sha256:291be77873bc04731968cacf82f0fcef17cee8cf200c6b6951e2bcab41560eb7
+RUN rm -f /etc/apt/sources.list.d/debian.sources \
+ && printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20261001T000000Z trixie main\n' > /etc/apt/sources.list \
+ && apt-get update && apt-get install -y --no-install-recommends openssh-server python3 tini git \
+ && rm -rf /var/lib/apt/lists/* \
+ && rm -f /etc/ssh/ssh_host_* \
+ && usermod -p '*' node && mkdir -p /run/sshd /home/node \
+ && chown node:node /run/sshd /home/node
+ENV HOME=/home/node
+COPY sshd_config /etc/ssh/sshd_config
+COPY entrypoint.sh /opt/runner/entrypoint.sh
+RUN chmod 755 /opt/runner/entrypoint.sh
+USER 1000:1000
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/runner/entrypoint.sh"]

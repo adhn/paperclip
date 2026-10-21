@@ -1,0 +1,369 @@
+--- a/src/client/createServerStreamingMethod.ts
++++ b/src/client/createServerStreamingMethod.ts
+@@ -49,6 +49,10 @@
+ 
+     const signal = options.signal ?? new AbortController().signal;
+ 
++    // Refuse cancellation completed while upstream middleware was awaiting.
++    // No RPC or request iterator may start from an already-aborted signal.
++    throwIfAborted(signal);
++
+     const call = client.makeServerStreamRequest(
+       grpcMethodDefinition.path,
+       grpcMethodDefinition.requestSerialize,
+@@ -64,11 +68,16 @@
+       onTrailer?.(convertMetadataFromGrpcJs(status.metadata));
+     });
+ 
++    let cancelAttempted = false;
+     const abortListener = () => {
++      if (cancelAttempted) return;
++      cancelAttempted = true;
+       call.cancel();
+     };
+ 
+     signal.addEventListener('abort', abortListener);
++    // RPC setup/serialization may synchronously abort before registration.
++    if (signal.aborted) abortListener();
+ 
+     try {
+       yield* readableToAsyncIterable(call);
+@@ -77,7 +86,7 @@
+     } finally {
+       signal.removeEventListener('abort', abortListener);
+       throwIfAborted(signal);
+-      call.cancel();
++      abortListener();
+     }
+   }
+ 
+--- a/src/client/createBidiStreamingMethod.ts
++++ b/src/client/createBidiStreamingMethod.ts
+@@ -3,6 +3,8 @@
+ import {
+   CallOptions,
+   ClientMiddleware,
++  ClientError,
++  Status,
+   Metadata,
+   MethodDescriptor,
+ } from 'nice-grpc-common';
+@@ -49,6 +51,10 @@
+ 
+     const signal = options.signal ?? new AbortController().signal;
+ 
++    // Refuse cancellation completed while upstream middleware was awaiting.
++    // No RPC or request iterator may start from an already-aborted signal.
++    throwIfAborted(signal);
++
+     const pipeAbortController = new AbortController();
+ 
+     const call = client.makeBidiStreamRequest(
+@@ -66,40 +72,69 @@
+     });
+ 
+     let pipeError: unknown;
+-
+-    pipeRequest(pipeAbortController.signal, request, call).then(
+-      () => {
+-        call.end();
+-      },
+-      err => {
+-        if (!isAbortError(err)) {
+-          pipeError = err;
+-          call.cancel();
++    let pipeFailed = false;
++    let readError: unknown;
++    let readFailed = false;
++    let cancelAttempted = false;
++    const cleanupFailures: unknown[] = [];
++    const cancelCall = () => {
++      if (cancelAttempted) return;
++      cancelAttempted = true;
++      try { call.cancel(); } catch (error) { cleanupFailures.push(error); }
++    };
++    const abortPipe = () => {
++      try { pipeAbortController.abort(); } catch (error) { cleanupFailures.push(error); }
++    };
++    const abortListener = () => {
++      abortPipe();
++      cancelCall();
++    };
++
++    signal.addEventListener('abort', abortListener);
++    if (signal.aborted) abortListener();
++    // Retain the complete producer lifetime, including async iterator.return().
++    // Install cancellation before starting user-controlled iterator code.
++    const pipeTask = pipeRequest(pipeAbortController.signal, request, call, error => cleanupFailures.push(error))
++      .then(() => {
++        if (!pipeAbortController.signal.aborted && !signal.aborted && !cancelAttempted) {
++          call.end();
+         }
+-      },
+-    );
+-
+-    const abortListener = () => {
+-      pipeAbortController.abort();
+-      call.cancel();
+-    };
+-
+-    signal.addEventListener('abort', abortListener);
++      })
++      .catch(error => {
++        if (!(isAbortError(error) && pipeAbortController.signal.aborted)) {
++          pipeFailed = true;
++          pipeError = error;
++          cancelCall();
++        }
++      });
+ 
+     try {
+       yield* readableToAsyncIterable(call);
+-    } catch (err) {
+-      throw wrapClientError(err, definition.path);
++    } catch (error) {
++      const wrapped = wrapClientError(error, definition.path);
++      // A requested local cancellation may surface as grpc CANCELLED. Preserve
++      // genuine transport/producer failures instead of masking them with abort.
++      const cancellation = (signal.aborted || pipeFailed) &&
++        (isAbortError(wrapped) || (wrapped instanceof ClientError && wrapped.code === Status.CANCELLED));
++      if (!cancellation) {
++        readFailed = true;
++        readError = wrapped;
++      }
+     } finally {
+-      pipeAbortController.abort();
+-      signal.removeEventListener('abort', abortListener);
++      abortPipe();
++      try { signal.removeEventListener('abort', abortListener); }
++      catch (error) { cleanupFailures.push(error); }
++      cancelCall();
++      // No timeout substitutes for producer settlement. An uncooperative next/
++      // return leaves this operation pending and its original authority held.
++      await pipeTask;
++      const failures: unknown[] = [];
++      if (readFailed) failures.push(readError);
++      if (pipeFailed && (!readFailed || pipeError !== readError)) failures.push(pipeError);
++      failures.push(...cleanupFailures);
++      if (failures.length === 1) throw failures[0];
++      if (failures.length > 1) throw new AggregateError(failures, 'Bidirectional stream cleanup is incomplete');
+       throwIfAborted(signal);
+-
+-      call.cancel();
+-
+-      if (pipeError) {
+-        throw pipeError;
+-      }
+     }
+   }
+ 
+@@ -157,14 +192,29 @@
+   signal: AbortSignal,
+   request: AsyncIterable<Request>,
+   call: ClientWritableStream<Request>,
++  cleanupFailed: (error: unknown) => void,
+ ): Promise<void> {
+-  for await (const item of request) {
+-    throwIfAborted(signal);
+-
+-    const shouldContinue = call.write(item);
+-
+-    if (!shouldContinue) {
+-      await waitForEvent(signal, call, 'drain');
++  throwIfAborted(signal);
++  const iterator = request[Symbol.asyncIterator]();
++  let completed = false;
++  try {
++    for (;;) {
++      throwIfAborted(signal);
++      const result = await iterator.next();
++      if (result.done) {
++        completed = true;
++        return;
++      }
++      throwIfAborted(signal);
++      const shouldContinue = call.write(result.value);
++      if (!shouldContinue) await waitForEvent(signal, call, 'drain');
++    }
++  } finally {
++    if (!completed) {
++      // Explicit ownership retains cleanup errors that language iterator-close
++      // can otherwise hide behind an already pending abort/producer exception.
++      try { await iterator.return?.(); }
++      catch (error) { cleanupFailed(error); }
+     }
+   }
+ }
+--- a/lib/client/createServerStreamingMethod.js
++++ b/lib/client/createServerStreamingMethod.js
+@@ -23,6 +23,9 @@
+         }
+         const { metadata = (0, nice_grpc_common_1.Metadata)(), onHeader, onTrailer } = options;
+         const signal = options.signal ?? new AbortController().signal;
++        // Refuse cancellation completed while upstream middleware was awaiting.
++        // No RPC or request iterator may start from an already-aborted signal.
++        (0, abort_controller_x_1.throwIfAborted)(signal);
+         const call = client.makeServerStreamRequest(grpcMethodDefinition.path, grpcMethodDefinition.requestSerialize, grpcMethodDefinition.responseDeserialize, request, (0, convertMetadata_1.convertMetadataToGrpcJs)(metadata));
+         call.on('metadata', metadata => {
+             onHeader?.((0, convertMetadata_1.convertMetadataFromGrpcJs)(metadata));
+@@ -30,10 +33,15 @@
+         call.on('status', status => {
+             onTrailer?.((0, convertMetadata_1.convertMetadataFromGrpcJs)(status.metadata));
+         });
++        let cancelAttempted = false;
+         const abortListener = () => {
++            if (cancelAttempted) return;
++            cancelAttempted = true;
+             call.cancel();
+         };
+         signal.addEventListener('abort', abortListener);
++        // RPC setup/serialization may synchronously abort before registration.
++        if (signal.aborted) abortListener();
+         try {
+             yield* (0, readableToAsyncIterable_1.readableToAsyncIterable)(call);
+         }
+@@ -43,7 +51,7 @@
+         finally {
+             signal.removeEventListener('abort', abortListener);
+             (0, abort_controller_x_1.throwIfAborted)(signal);
+-            call.cancel();
++            abortListener();
+         }
+     }
+     const method = middleware == null
+--- a/lib/client/createBidiStreamingMethod.js
++++ b/lib/client/createBidiStreamingMethod.js
+@@ -23,6 +23,9 @@
+         }
+         const { metadata = (0, nice_grpc_common_1.Metadata)(), onHeader, onTrailer } = options;
+         const signal = options.signal ?? new AbortController().signal;
++        // Refuse cancellation completed while upstream middleware was awaiting.
++        // No RPC or request iterator may start from an already-aborted signal.
++        (0, abort_controller_x_1.throwIfAborted)(signal);
+         const pipeAbortController = new AbortController();
+         const call = client.makeBidiStreamRequest(grpcMethodDefinition.path, grpcMethodDefinition.requestSerialize, grpcMethodDefinition.responseDeserialize, (0, convertMetadata_1.convertMetadataToGrpcJs)(metadata));
+         call.on('metadata', metadata => {
+@@ -32,33 +35,69 @@
+             onTrailer?.((0, convertMetadata_1.convertMetadataFromGrpcJs)(status.metadata));
+         });
+         let pipeError;
+-        pipeRequest(pipeAbortController.signal, request, call).then(() => {
+-            call.end();
+-        }, err => {
+-            if (!(0, abort_controller_x_1.isAbortError)(err)) {
+-                pipeError = err;
+-                call.cancel();
+-            }
+-        });
++        let pipeFailed = false;
++        let readError;
++        let readFailed = false;
++        let cancelAttempted = false;
++        const cleanupFailures = [];
++        const cancelCall = () => {
++            if (cancelAttempted) return;
++            cancelAttempted = true;
++            try { call.cancel(); } catch (error) { cleanupFailures.push(error); }
++        };
++        const abortPipe = () => {
++            try { pipeAbortController.abort(); } catch (error) { cleanupFailures.push(error); }
++        };
+         const abortListener = () => {
+-            pipeAbortController.abort();
+-            call.cancel();
++            abortPipe();
++            cancelCall();
+         };
+         signal.addEventListener('abort', abortListener);
++        if (signal.aborted) abortListener();
++        // Retain the complete producer lifetime, including async iterator.return().
++        // Install cancellation before starting user-controlled iterator code.
++        const pipeTask = pipeRequest(pipeAbortController.signal, request, call, error => cleanupFailures.push(error))
++            .then(() => {
++                if (!pipeAbortController.signal.aborted && !signal.aborted && !cancelAttempted) {
++                    call.end();
++                }
++            })
++            .catch(error => {
++                if (!((0, abort_controller_x_1.isAbortError)(error) && pipeAbortController.signal.aborted)) {
++                    pipeFailed = true;
++                    pipeError = error;
++                    cancelCall();
++                }
++            });
+         try {
+             yield* (0, readableToAsyncIterable_1.readableToAsyncIterable)(call);
+         }
+-        catch (err) {
+-            throw (0, wrapClientError_1.wrapClientError)(err, definition.path);
++        catch (error) {
++            const wrapped = (0, wrapClientError_1.wrapClientError)(error, definition.path);
++            // A requested local cancellation may surface as grpc CANCELLED. Preserve
++            // genuine transport/producer failures instead of masking them with abort.
++            const cancellation = (signal.aborted || pipeFailed) &&
++                ((0, abort_controller_x_1.isAbortError)(wrapped) || (wrapped instanceof nice_grpc_common_1.ClientError && wrapped.code === nice_grpc_common_1.Status.CANCELLED));
++            if (!cancellation) {
++                readFailed = true;
++                readError = wrapped;
++            }
+         }
+         finally {
+-            pipeAbortController.abort();
+-            signal.removeEventListener('abort', abortListener);
++            abortPipe();
++            try { signal.removeEventListener('abort', abortListener); }
++            catch (error) { cleanupFailures.push(error); }
++            cancelCall();
++            // No timeout substitutes for producer settlement. An uncooperative next/
++            // return leaves this operation pending and its original authority held.
++            await pipeTask;
++            const failures = [];
++            if (readFailed) failures.push(readError);
++            if (pipeFailed && (!readFailed || pipeError !== readError)) failures.push(pipeError);
++            failures.push(...cleanupFailures);
++            if (failures.length === 1) throw failures[0];
++            if (failures.length > 1) throw new AggregateError(failures, 'Bidirectional stream cleanup is incomplete');
+             (0, abort_controller_x_1.throwIfAborted)(signal);
+-            call.cancel();
+-            if (pipeError) {
+-                throw pipeError;
+-            }
+         }
+     }
+     const method = middleware == null
+@@ -97,12 +136,29 @@
+         };
+     };
+ }
+-async function pipeRequest(signal, request, call) {
+-    for await (const item of request) {
+-        (0, abort_controller_x_1.throwIfAborted)(signal);
+-        const shouldContinue = call.write(item);
+-        if (!shouldContinue) {
+-            await (0, abort_controller_x_1.waitForEvent)(signal, call, 'drain');
++async function pipeRequest(signal, request, call, cleanupFailed) {
++    (0, abort_controller_x_1.throwIfAborted)(signal);
++    const iterator = request[Symbol.asyncIterator]();
++    let completed = false;
++    try {
++        for (;;) {
++            (0, abort_controller_x_1.throwIfAborted)(signal);
++            const result = await iterator.next();
++            if (result.done) {
++                completed = true;
++                return;
++            }
++            (0, abort_controller_x_1.throwIfAborted)(signal);
++            const shouldContinue = call.write(result.value);
++            if (!shouldContinue) await (0, abort_controller_x_1.waitForEvent)(signal, call, 'drain');
++        }
++    }
++    finally {
++        if (!completed) {
++            // Explicit ownership retains cleanup errors that language iterator-close
++            // can otherwise hide behind an already pending abort/producer exception.
++            try { await iterator.return?.(); }
++            catch (error) { cleanupFailed(error); }
+         }
+     }
+ }

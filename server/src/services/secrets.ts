@@ -1,3 +1,14 @@
+import { assertCredentialRecoveryDefinitionMutationAllowed } from "./credential-recovery-definition-guard.js";
+import { assertNoPendingSetupMessageForSecret } from "./connectors/slack/setup/setup-message-recovery.js";
+import { assertNoPendingRegistrationCleanupForSecret, assertRegistrationCleanupSecretRemovalAllowed } from "./connectors/slack/setup/registration-cleanup-recovery.js";
+import { readSecretRecoveryIdentity } from "./secret-recovery-identity.js";
+import { assertNoPendingStagedCleanupForSecret, assertStagedCleanupSecretRemovalAllowed } from "./connectors/slack/setup/staged-cleanup-recovery.js";
+import { assertNoPendingManagedInstallForSecret, assertManagedInstallSecretMutationAllowed, assertManagedInstallSecretRemovalAllowed } from "./connectors/slack/setup/managed-install-recovery.js";
+import { assertNoPendingManagerRevokeForSecret, assertManagerRevokeSecretRemovalAllowed } from "./connectors/slack/setup/manager-revoke-recovery.js";
+import { assertNoPendingManagerClaimForSecret, assertManagerClaimSecretMutationAllowed } from "./connectors/slack/setup/manager-claim-recovery.js";
+import { assertManagerRefreshSecretMutationAllowed } from "./connectors/slack/setup/manager-refresh-recovery.js";
+import { assertNoPendingSlackInstallForSecret, assertSlackInstallSecretMutationAllowed } from "./connectors/slack/setup/install-recovery.js";
+import { assertNoPendingQuotaCredentialForSecret, assertQuotaCredentialSecretMutationAllowed } from "./quota-credential-recovery.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -2412,8 +2423,43 @@ export function secretService(db: Db | DbTransaction) {
     const secret = await getById(secretId);
     if (!secret) throw notFound("Secret not found");
     if (secret.status !== "active") throw unprocessable("Cannot rotate a non-active secret");
+    try {
+      await assertQuotaCredentialSecretMutationAllowed(secret.companyId, secret.id, await readSecretRecoveryIdentity(db, secret.companyId, secret.id),
+        input.externalRef === undefined && input.providerVersionRef === undefined && input.providerConfigId === undefined && typeof input.value === "string" ? input.value : undefined);
+      const onlyValue = input.externalRef === undefined && input.providerVersionRef === undefined && input.providerConfigId === undefined;
+      await assertNoPendingSetupMessageForSecret(secret.companyId, secret.id);
+      await assertNoPendingRegistrationCleanupForSecret(secret.companyId, secret.id);
+      await assertNoPendingStagedCleanupForSecret(secret.companyId, secret.id);
+      await assertManagedInstallSecretMutationAllowed(secret.companyId, secret.id,
+        onlyValue && typeof input.value === "string" ? input.value : undefined);
+      await assertNoPendingManagerRevokeForSecret(secret.companyId, secret.id);
+      await assertManagerClaimSecretMutationAllowed(secret.companyId, secret.id,
+        onlyValue && typeof input.value === "string" ? input.value : undefined);
+      await assertSlackInstallSecretMutationAllowed(secret.companyId, secret.id,
+        onlyValue && typeof input.value === "string" ? input.value : undefined);
+      await assertManagerRefreshSecretMutationAllowed(secret.companyId, secret.id,
+        onlyValue && typeof input.value === "string" ? input.value : undefined);
+    } catch {
+      throw conflict("Secret mutation requires inspection of retained credential exchange recovery.", {
+        code: "secret_credential_recovery_pending", secretId: secret.id,
+      });
+    }
     if (input.expectedLatestVersion !== undefined && secret.latestVersion !== input.expectedLatestVersion) {
       throw conflict(SECRET_VERSION_STALE_CONFLICT);
+    }
+    // Versions do not yet retain their original vault/reference owner. Moving
+    // the parent would relabel historical material and lose cleanup custody.
+    // Refuse new migrations before any provider write or version/parent mutation.
+    const selectedConfigId = input.providerConfigId === undefined ? secret.providerConfigId : input.providerConfigId;
+    const originalExternalRef = secret.externalRef?.trim() ?? null;
+    const selectedExternalRef = input.externalRef == null ? originalExternalRef : input.externalRef.trim();
+    if (selectedConfigId !== secret.providerConfigId || selectedExternalRef !== originalExternalRef) {
+      throw conflict(
+        secret.managedMode !== "external_reference" && selectedExternalRef !== originalExternalRef
+          ? "Managed secrets cannot override externalRef; original provider owner migration is unavailable."
+          : "Secret provider owner migration is unavailable until original version owners can be retained.",
+        { code: "secret_provider_owner_migration_unavailable", secretId: secret.id },
+      );
     }
     const providerId = secret.provider as SecretProvider;
     const provider = getSecretProvider(providerId);
@@ -2449,7 +2495,8 @@ export function secretService(db: Db | DbTransaction) {
     if (secret.managedMode === "external_reference" && !(input.externalRef ?? secret.externalRef)?.trim()) {
       throw unprocessable("External reference secrets require externalRef");
     }
-    if (secret.managedMode !== "external_reference" && input.externalRef?.trim()) {
+    if (secret.managedMode !== "external_reference" && input.externalRef?.trim() &&
+        input.externalRef.trim() !== secret.externalRef?.trim()) {
       throw unprocessable("Managed secrets cannot override externalRef");
     }
     if (secret.managedMode !== "external_reference" && !input.value?.trim()) {
@@ -2630,6 +2677,22 @@ export function secretService(db: Db | DbTransaction) {
     const secret = await getById(secretId);
     if (!secret) throw notFound("Secret not found");
     if (secret.status === "deleted") throw notFound("Secret not found");
+    try {
+      await assertQuotaCredentialSecretMutationAllowed(secret.companyId, secret.id);
+      await assertNoPendingManagerRevokeForSecret(secret.companyId, secret.id);
+      await assertNoPendingSetupMessageForSecret(secret.companyId, secret.id);
+      await assertNoPendingRegistrationCleanupForSecret(secret.companyId, secret.id);
+      await assertNoPendingStagedCleanupForSecret(secret.companyId, secret.id);
+      await assertManagedInstallSecretMutationAllowed(secret.companyId, secret.id);
+      await assertManagerClaimSecretMutationAllowed(secret.companyId, secret.id);
+      await assertSlackInstallSecretMutationAllowed(secret.companyId, secret.id);
+      await assertManagerRefreshSecretMutationAllowed(secret.companyId, secret.id);
+    }
+    catch {
+      throw conflict("Secret mutation requires inspection of retained credential exchange recovery.", {
+        code: "secret_credential_recovery_pending", secretId: secret.id,
+      });
+    }
 
     if (patch.name && patch.name !== secret.name) {
       const duplicate = await getByName(secret.companyId, patch.name);
@@ -2639,6 +2702,13 @@ export function secretService(db: Db | DbTransaction) {
     }
     const nextKey = patch.key ? normalizeSecretKey(patch.key) : secret.key;
     if (!nextKey) throw unprocessable("Secret key is required");
+    if (nextKey !== secret.key && secret.managedMode === "paperclip_managed" && secret.provider !== "local_encrypted") {
+      // Remote managed namespaces derive from this key. Versions cannot yet
+      // retain a different original namespace key for resolution and cleanup.
+      throw conflict("Remote managed secret key migration is unavailable until original provider owners can be retained.", {
+        code: "secret_provider_owner_migration_unavailable", secretId: secret.id,
+      });
+    }
     if (nextKey !== secret.key) {
       const duplicateKey = await db
         .select()
@@ -2685,7 +2755,7 @@ export function secretService(db: Db | DbTransaction) {
       patch.providerConfigId !== secret.providerConfigId
     ) {
       throw unprocessable(
-        "Managed secrets cannot change provider vault through PATCH; use rotate() to migrate to a new vault",
+        "Managed secrets cannot change provider vault through PATCH; original provider owner migration is unavailable",
       );
     }
     if (patch.providerConfigId !== undefined) {
@@ -3389,6 +3459,25 @@ export function secretService(db: Db | DbTransaction) {
   async function removeSecretUnlocked(secretId: string) {
     const secret = await getById(secretId);
     if (!secret) return null;
+    try {
+      await assertNoPendingQuotaCredentialForSecret(secret.companyId, secret.id);
+      await assertNoPendingSetupMessageForSecret(secret.companyId, secret.id);
+      const removalIdentity = await readSecretRecoveryIdentity(db, secret.companyId, secret.id);
+      await assertRegistrationCleanupSecretRemovalAllowed(secret.companyId, secret.id, removalIdentity);
+      await assertStagedCleanupSecretRemovalAllowed(secret.companyId, secret.id, removalIdentity);
+      await assertManagedInstallSecretRemovalAllowed(secret.companyId, secret.id);
+      await assertManagerRevokeSecretRemovalAllowed(secret.companyId, secret.id);
+      await assertNoPendingManagerClaimForSecret(secret.companyId, secret.id);
+      await assertNoPendingSlackInstallForSecret(secret.companyId, secret.id);
+      await assertManagerRefreshSecretMutationAllowed(secret.companyId, secret.id);
+    } catch {
+      // Retained journals remain authoritative even when grant refs are severed
+      // or this secret is already tombstoned. No cleanup or deletion may hide
+      // their original credential identity; unreadable inventory also refuses.
+      throw conflict("Secret removal requires inspection of retained credential exchange recovery.", {
+        code: "secret_credential_recovery_pending", secretId: secret.id,
+      });
+    }
     const versionRow = await getSecretVersion(secret.id, secret.latestVersion);
     const providerId = secret.provider as SecretProvider;
     const provider = getSecretProvider(providerId);
@@ -3411,7 +3500,24 @@ export function secretService(db: Db | DbTransaction) {
       providerConfig && providerConfig.status !== "disabled" && providerConfig.status !== "coming_soon"
         ? toProviderVaultRuntimeConfig(providerConfig)
         : null;
-    if (!secret.providerConfigId || providerRuntimeConfig) {
+    if (secret.providerConfigId && (
+      !providerRuntimeConfig ||
+      providerConfig?.companyId !== secret.companyId ||
+      providerConfig.provider !== providerId
+    )) {
+      // Keep the tombstone and every version/material reference until the exact
+      // configured vault can perform cleanup. Falling back to environment
+      // credentials or deleting metadata would lose the original cleanup owner.
+      throw new HttpError(409, "Secret cleanup is pending until its original provider vault is available.", {
+        code: "secret_provider_cleanup_pending",
+        provider: providerId,
+        providerConfigId: secret.providerConfigId,
+      });
+    }
+    {
+      const tombstoneSuffix = `__deleted__${secret.id}`;
+      const originalName = (value: string) => secret.status === "deleted" && value.endsWith(tombstoneSuffix)
+        ? value.slice(0, -tombstoneSuffix.length) : value;
       try {
         await provider.deleteOrArchive({
           material: versionRow?.material as Record<string, unknown> | undefined,
@@ -3419,8 +3525,8 @@ export function secretService(db: Db | DbTransaction) {
           providerConfig: providerRuntimeConfig,
           context: {
             companyId: secret.companyId,
-            secretKey: secret.key,
-            secretName: secret.name,
+            secretKey: originalName(secret.key),
+            secretName: originalName(secret.name),
             version: secret.latestVersion,
           },
           mode: "delete",
@@ -3440,34 +3546,37 @@ export function secretService(db: Db | DbTransaction) {
     definitionId: string,
     actor?: { userId?: string | null; agentId?: string | null },
   ) {
-    const existing = await resolveUserSecretDefinition(companyId, { definitionId });
-    const values = await db
-      .select({ id: companySecrets.id })
-      .from(companySecrets)
-      .where(and(
-        eq(companySecrets.companyId, companyId),
-        eq(companySecrets.scope, "user"),
-        eq(companySecrets.userSecretDefinitionId, definitionId),
-      ));
-    for (const value of values) {
-      await removeSecretInternal(value.id);
-    }
-    return db
-      .update(userSecretDefinitions)
-      .set({
-        key: `${existing.key}__deleted__${existing.id}`,
-        status: "deleted",
-        deletedAt: existing.deletedAt ?? new Date(),
-        updatedByAgentId: actor?.agentId ?? null,
-        updatedByUserId: actor?.userId ?? null,
-        updatedAt: new Date(),
-      })
-      .where(and(
-        eq(userSecretDefinitions.companyId, companyId),
-        eq(userSecretDefinitions.id, definitionId),
-      ))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+    return withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+      const existing = await resolveUserSecretDefinition(companyId, { definitionId });
+      await assertCredentialRecoveryDefinitionMutationAllowed(companyId, definitionId);
+      const values = await db
+        .select({ id: companySecrets.id })
+        .from(companySecrets)
+        .where(and(
+          eq(companySecrets.companyId, companyId),
+          eq(companySecrets.scope, "user"),
+          eq(companySecrets.userSecretDefinitionId, definitionId),
+        ));
+      for (const value of values) {
+        await removeSecretInternal(value.id);
+      }
+      return db
+        .update(userSecretDefinitions)
+        .set({
+          key: `${existing.key}__deleted__${existing.id}`,
+          status: "deleted",
+          deletedAt: existing.deletedAt ?? new Date(),
+          updatedByAgentId: actor?.agentId ?? null,
+          updatedByUserId: actor?.userId ?? null,
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(userSecretDefinitions.companyId, companyId),
+          eq(userSecretDefinitions.id, definitionId),
+        ))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    });
   }
 
   return {
@@ -3638,23 +3747,33 @@ export function secretService(db: Db | DbTransaction) {
         config?: Record<string, unknown>;
       },
     ) => {
-      const existing = await getProviderConfigById(id);
-      if (!existing) return null;
       const parsed = updateSecretProviderConfigSchema.safeParse(patch);
       if (!parsed.success) throw unprocessable("Invalid provider vault config", parsed.error.flatten());
-      const provider = existing.provider as SecretProvider;
-      const status = patch.status ?? (existing.status as SecretProviderConfigStatus);
-      if (COMING_SOON_SECRET_PROVIDERS.has(provider) && status !== "coming_soon" && status !== "disabled") {
-        throw unprocessable(`${provider} provider vaults are locked while coming soon`);
-      }
-      if ((status === "coming_soon" || status === "disabled") && patch.isDefault) {
-        throw unprocessable("Only ready or warning provider vaults can be default");
-      }
-      const normalizedConfig =
-        patch.config === undefined
-          ? existing.config
-          : validateProviderConfigPayload(provider, patch.config);
       return db.transaction(async (tx) => {
+        const [existing] = await tx.select().from(companySecretProviderConfigs)
+          .where(eq(companySecretProviderConfigs.id, id)).for("update");
+        if (!existing) return null;
+        const provider = existing.provider as SecretProvider;
+        const status = patch.status ?? (existing.status as SecretProviderConfigStatus);
+        if (COMING_SOON_SECRET_PROVIDERS.has(provider) && status !== "coming_soon" && status !== "disabled") {
+          throw unprocessable(`${provider} provider vaults are locked while coming soon`);
+        }
+        if ((status === "coming_soon" || status === "disabled") && patch.isDefault) {
+          throw unprocessable("Only ready or warning provider vaults can be default");
+        }
+        const normalizedConfig = patch.config === undefined
+          ? existing.config : validateProviderConfigPayload(provider, patch.config);
+        const semanticJson = (value: unknown) => JSON.stringify(value, (_key, item) =>
+          item && typeof item === "object" && !Array.isArray(item)
+            ? Object.fromEntries(Object.entries(item).sort(([left], [right]) => left.localeCompare(right)))
+            : item);
+        if (semanticJson(normalizedConfig) !== semanticJson(existing.config)) {
+          const [reference] = await tx.select({ id: companySecrets.id }).from(companySecrets)
+            .where(eq(companySecrets.providerConfigId, id)).limit(1);
+          if (reference) throw conflict("Provider vault configuration is retained by existing secrets.", {
+            code: "secret_provider_config_in_use", providerConfigId: id,
+          });
+        }
         if (patch.isDefault) {
           await tx
             .update(companySecretProviderConfigs)
@@ -3696,12 +3815,22 @@ export function secretService(db: Db | DbTransaction) {
         .then((rows) => rows[0] ?? null);
     },
 
-    removeProviderConfig: async (id: string) =>
-      db
-        .delete(companySecretProviderConfigs)
-        .where(eq(companySecretProviderConfigs.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null),
+    removeProviderConfig: async (id: string) => db.transaction(async (tx) => {
+      const [config] = await tx.select().from(companySecretProviderConfigs)
+        .where(eq(companySecretProviderConfigs.id, id)).for("update");
+      if (!config) return null;
+      // Keep the FK cleanup identity even for deleted tombstones. The row lock
+      // also excludes concurrent FK references until removal commits; a late
+      // insertion must fail its FK rather than silently inherit null config.
+      const [reference] = await tx.select({ id: companySecrets.id }).from(companySecrets)
+        .where(eq(companySecrets.providerConfigId, id)).limit(1);
+      if (reference) throw conflict("Provider vault still has secrets awaiting removal.", {
+        code: "secret_provider_config_in_use", providerConfigId: id,
+      });
+      return tx.delete(companySecretProviderConfigs)
+        .where(eq(companySecretProviderConfigs.id, id)).returning()
+        .then((rows) => rows[0] ?? null);
+    }),
 
     setDefaultProviderConfig: async (id: string) => {
       const existing = await getProviderConfigById(id);
@@ -3903,8 +4032,9 @@ export function secretService(db: Db | DbTransaction) {
         usageGuidance?: string | null;
       },
       actor?: { userId?: string | null; agentId?: string | null },
-    ) => {
+    ) => withAccountHomeSecretMutationLock(undefined, companyId, async () => {
       const existing = await resolveUserSecretDefinition(companyId, { definitionId });
+      await assertCredentialRecoveryDefinitionMutationAllowed(companyId, definitionId);
       if (patch.status === "deleted") {
         return removeUserSecretDefinitionInternal(companyId, existing.id, actor);
       }
@@ -3946,7 +4076,7 @@ export function secretService(db: Db | DbTransaction) {
         ))
         .returning()
         .then((rows) => rows[0] ?? null);
-    },
+    }),
 
     removeUserSecretDefinition: async (
       companyId: string,
@@ -4083,15 +4213,7 @@ export function secretService(db: Db | DbTransaction) {
       if (patch.status === "deleted") {
         return await secretService(db).removeCurrentUserSecretValue(companyId, ownerUserId, secret.id);
       }
-      return db
-        .update(companySecrets)
-        .set({
-          status: patch.status ?? secret.status,
-          updatedAt: new Date(),
-        })
-        .where(eq(companySecrets.id, secret.id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      return await secretService(db).update(secret.id, { status: patch.status });
     },
 
     removeCurrentUserSecretValue: async (companyId: string, ownerUserId: string, secretId: string) => {

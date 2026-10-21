@@ -22,6 +22,7 @@ vi.mock("@chat-adapter/discord", () => ({
     captures.discordConfigs.push(config);
     return {
       name: "discord",
+      paperclipGatewayCleanupFailed: false,
       paperclipCompatibilityRevision:
         config.botToken === "unpatched-discord"
           ? undefined
@@ -39,6 +40,10 @@ vi.mock("@chat-adapter/discord", () => ({
         durationMs: number,
       ) {
         captures.discordGatewayDurations.push(durationMs);
+        if (config.botToken === "gateway-cleanup-failure") {
+          this.paperclipGatewayCleanupFailed = true;
+          throw new Error("actual Gateway cleanup failed");
+        }
         if (config.botToken === "gateway-start-failure") {
           throw new Error("Gateway failed to start");
         }
@@ -960,6 +965,27 @@ describe("Chat SDK endpoint runtime", () => {
         }
       },
     );
+
+    it("retains failed Gateway cleanup without restart, release or successor construction", async () => {
+      const registry = createChatSdkRuntime();
+      const options = baseOptions({ provider: "discord", userName: "agent", credentials: {
+        botToken: "gateway-cleanup-failure", applicationId: "app", guildId: "guild",
+      } });
+      const runtime = await registry.replaceEndpoint(options);
+      try {
+        await runtime.initialize();
+        await vi.waitFor(() => expect(captures.discordGatewayDurations).toHaveLength(1));
+        await expect(registry.removeEndpoint(options.endpointId)).rejects.toThrow("cleanup remains uncertain");
+        await expect(registry.replaceEndpoint(options)).rejects.toThrow("cleanup remains uncertain");
+        expect(captures.discordGatewayDurations).toHaveLength(1);
+        expect(captures.chats).toHaveLength(1);
+        expect(registry.get(options.endpointId)).toBeNull();
+        expect(captures.chats[0]).toMatchObject({ shutdownCalls: 2 });
+        await expect(runtime.initialize()).rejects.toThrow("retired");
+      } finally {
+        await Promise.allSettled([registry.shutdown()]);
+      }
+    });
 
     it("joins failed initialization and retains a failed shutdown owner for explicit retry", async () => {
       const registry = createChatSdkRuntime();

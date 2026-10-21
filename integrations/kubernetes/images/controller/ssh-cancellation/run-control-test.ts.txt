@@ -1,0 +1,28 @@
+  it("holds SSH cancellation until remote proof and rejects missing proof without acknowledgement", async () => {
+    const database = guardedDatabase();
+    const deps = callbacks(database.db);
+    const run = { id: "ssh-stop", agentId: "ssh-agent", status: "running", runtimeMode: "legacy", runtimeModeResolvedAt: new Date() } as Run;
+    deps.getRun.mockResolvedValue(run);
+    deps.getAgent.mockResolvedValue({ id: run.agentId, adapterType: "codex_local", adapterConfig: {} } as never);
+    let rejectStop!: (error: Error) => void;
+    const stopRemote = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectStop = reject; }));
+    runningProcesses.set(run.id, { child: { pid: 424242 } as never, graceSec: 2, processGroupId: 424242, stopRemote });
+    deps.activeRunExecutions.add(run.id);
+    try {
+      const first = createHeartbeatRunControl(database.db, deps).cancelRunInternal(run.id);
+      const result = Promise.allSettled([first]);
+      await vi.waitFor(() => expect(stopRemote).toHaveBeenCalledOnce());
+      expect(deps.setRunStatusFromLive).not.toHaveBeenCalled();
+      expect(terminateLocalService).not.toHaveBeenCalled();
+      const failure = new Error("Remote termination unverified");
+      rejectStop(failure);
+      expect(await result).toEqual([{ status: "rejected", reason: failure }]);
+      expect(deps.setRunStatusFromLive).not.toHaveBeenCalled();
+      expect(deps.finalizeAgentStatus).not.toHaveBeenCalled();
+      expect(deps.startNextQueuedRunForAgent).not.toHaveBeenCalled();
+      expect(runningProcesses.has(run.id)).toBe(true);
+      expect(database.access).not.toHaveBeenCalled();
+    } finally {
+      runningProcesses.delete(run.id);
+    }
+  });

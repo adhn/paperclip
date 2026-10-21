@@ -158,3 +158,48 @@ describe("session reuse store", () => {
     expect(store.borrow("fresh")).toEqual({ id: "fresh2", lastUsedAt: 1500 });
   });
 });
+
+
+describe("staged disposal acknowledgment", () => {
+  it("keeps exact entry until disposal acknowledges and preserves a newer replacement", async () => {
+    const original: Entry = { id: "original", lastUsedAt: 0 }, replacement: Entry = { id: "replacement", lastUsedAt: 0 };
+    const entries = new Map([["key", original]]);
+    let resolve!: () => void;
+    const gate = new Promise<void>(r => { resolve = r; });
+    const store = createSessionReuseStore({ entries, now: () => 1000, idleMs: 1, lastUsedAt: (entry: Entry) => entry.lastUsedAt,
+      deleteAfterRelease: true, release: async () => { await gate; } });
+    const discard = store.discard("key");
+    expect(entries.get("key")).toBe(original);
+    entries.set("key", replacement); resolve(); await discard;
+    expect(entries.get("key")).toBe(replacement);
+  });
+  it("retains exact entry on rejected disposal including undefined", async () => {
+    const entry: Entry = { id: "original", lastUsedAt: 0 }, entries = new Map([["key", entry]]);
+    const store = createSessionReuseStore({ entries, now: () => 1000, idleMs: 1, lastUsedAt: (entry: Entry) => entry.lastUsedAt,
+      deleteAfterRelease: true, release: async () => { throw undefined; } });
+    const outcome = await Promise.resolve(store.discard("key")).then(() => false, () => true);
+    expect(outcome).toBe(true); expect(entries.get("key")).toBe(entry);
+  });
+});
+
+
+describe("exact original cleanup remains occupied across store instances", () => {
+  it("refuses borrow and replacement while pending and after rejection without replaying cleanup", async () => {
+    const entry: Entry = { id: "original", lastUsedAt: 0 }, entries = new Map([["key", entry]]);
+    let reject!: (error: unknown) => void, attempts = 0;
+    const gate = new Promise<void>((_resolve, fail) => { reject = fail; });
+    const config = { entries, now: () => 1000, idleMs: 1, lastUsedAt: (value: Entry) => value.lastUsedAt,
+      deleteAfterRelease: true, release: async () => { attempts++; await gate; } };
+    const originalStore = createSessionReuseStore(config), rebuilt = createSessionReuseStore(config);
+    const first = Promise.resolve(originalStore.discard("key"));
+    void first.catch(() => {});
+    await Promise.resolve();
+    expect(() => rebuilt.borrow("key")).toThrow("Session cleanup requires exact inspection");
+    expect(() => rebuilt.save("key", { id: "replacement", lastUsedAt: 0 })).toThrow("Session cleanup requires exact inspection");
+    reject(undefined);
+    await first.catch(() => {});
+    expect(() => rebuilt.borrow("key")).toThrow("Session cleanup requires exact inspection");
+    const repeated = await Promise.resolve(rebuilt.discard("key")).then(() => false, error => error === undefined);
+    expect(repeated).toBe(true); expect(attempts).toBe(1); expect(entries.get("key")).toBe(entry);
+  });
+});

@@ -1,3 +1,15 @@
+import { assertNoPendingManagerRefreshForActor } from "./manager-refresh-recovery.js";
+import { assertNoPendingManagerRevokeForActor } from "./manager-revoke-recovery.js";
+import { assertNoPendingSetupMessageForEndpoint, setupMessageRecovery, setupMessageHash, setupMessagePending, type SetupMessageIntent } from "./setup-message-recovery.js";
+import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
+import { readSecretRecoveryIdentity } from "../../../secret-recovery-identity.js";
+import { registrationCleanupRecovery, registrationCleanupPending, assertNoPendingRegistrationCleanupForEndpoint, withRegistrationCleanup, type RegistrationCleanupIntent } from "./registration-cleanup-recovery.js";
+import { assertNoPendingManagedInstallForEndpoint } from "./managed-install-recovery.js";
+import { assertNoPendingManagerClaimForEndpoint } from "./manager-claim-recovery.js";
+import { randomUUID } from "node:crypto";
+import { assertNoPendingStagedCleanupForEndpoint } from "./staged-cleanup-recovery.js";
+import { assertManagedInstallCompletionAllowed } from "./managed-install-recovery.js";
+import { assertNoPendingSlackInstall } from "./install-recovery.js";
 import { notifyChatVerificationWork } from "../../../chat-work-notifications.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { chatEndpoints, chatSlackRegistrations } from "@paperclipai/db";
@@ -37,35 +49,84 @@ export function createSlackCompletion(store: SlackRegistrationStore) {
     catch { logger.warn({ endpointId: row.endpointId, appId: row.appId }, "Slack account activity could not be recorded"); }
   }
   async function sendSetupMessage(row: Registration, actor: SlackSetupActor, lease: CredentialMutationLeaseGuard, kind: "welcome" | "verification") {
-    const current = await endpoint(row.endpointId, actor);
-    const account = current.endpoint.setup.slackAccount;
-    if (!account || account.status !== "linked") return;
-    if (kind === "verification" && (!current.endpoint.setup.webhookVerifiedAt || ["pending", "sending"].includes(account.welcomeStatus))) return;
-    const field = kind === "welcome" ? "welcomeStatus" : "verificationStatus";
-    const status = account[field] ?? "pending";
-    if (status === "sending") {
-      await saveAccount(row, { ...account, [field]: "uncertain" }, actor, lease);
-      return; // Never replay an ambiguous dispatch after a process restart.
-    }
-    if (status !== "pending") return;
-    await saveAccount(row, { ...account, [field]: "sending" }, actor, lease);
-    let result: SlackAccountState;
-    try {
-      await endpoint(row.endpointId, actor);
-      await lease.assertOwned();
-      if (!await options.canWelcome(row.endpointId, account)) throw forbidden("Slack account access changed");
-      const sent = await api("chat.postMessage", { channel: account.dmChannelId ?? account.externalUserId,
+    return withAccountHomeSecretMutationLock(undefined, row.companyId, async () => {
+      await assertNoPendingRegistrationCleanupForEndpoint(row.companyId, row.endpointId);
+      await assertNoPendingStagedCleanupForEndpoint(row.companyId, row.endpointId);
+      await assertNoPendingManagerClaimForEndpoint(row.companyId, row.endpointId);
+      await assertNoPendingManagerRefreshForActor(row.companyId, actor.userId);
+      await assertNoPendingManagerRevokeForActor(row.companyId, actor.userId);
+      await assertManagedInstallCompletionAllowed(row.companyId, row.endpointId);
+      await assertNoPendingSlackInstall(row.companyId, row.endpointId);
+      const current = await endpoint(row.endpointId, actor);
+      const account = current.endpoint.setup.slackAccount;
+      if (!account || account.status !== "linked") return;
+      if (kind === "verification" && (!current.endpoint.setup.webhookVerifiedAt || account.welcomeStatus === "pending")) return;
+      if (kind === "verification" && account.welcomeStatus !== "sent") throw setupMessagePending();
+      const field = kind === "welcome" ? "welcomeStatus" : "verificationStatus";
+      const status = account[field] ?? "pending";
+      const recovery = setupMessageRecovery(row.companyId, row.endpointId, kind);
+      const retained = await recovery.read();
+      if (retained) {
+        if (retained.kind !== "setup-message-settled" || status !== "sent" || retained.intent.originalAccount.externalUserId !== account.externalUserId ||
+            retained.intent.originalAccount.paperclipUserId !== account.paperclipUserId || account.dmChannelId !== retained.decoded.channel || !options.runtimeBotCredential) throw setupMessagePending();
+        const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
+        for (const key of ["id", "companyId", "connectionId", "provider", "publicId", "assignedAgentId", "providerAccountId", "botExternalId"] as const) if (!same(current.endpoint[key], retained.intent.originalEndpoint[key])) throw setupMessagePending();
+        if (!same(current.endpoint.setup.runtimeGeneration, (retained.intent.originalEndpoint.setup as Record<string, unknown> | undefined)?.runtimeGeneration)) throw setupMessagePending();
+        for (const key of ["id", "companyId", "applicationId", "transport", "config", "credentialSecretRefs"] as const) if (!same(current.connection[key], retained.intent.originalConnection[key])) throw setupMessagePending();
+        const registrationCurrent = await registration(row.endpointId);
+        if (!registrationCurrent) throw setupMessagePending();
+        for (const key of ["companyId", "endpointId", "requestId", "appId", "manifestHash", "managerGrantId", "workspaceId", "botUserId", "callbackUri"] as const) if (!same(registrationCurrent[key], retained.intent.originalRegistration[key])) throw setupMessagePending();
+        const currentCredential = await options.runtimeBotCredential(row.endpointId);
+        if (!same(currentCredential.identity, retained.intent.runtimeTokenIdentity) || setupMessageHash(currentCredential.value) !== retained.intent.tokenHash) throw setupMessagePending();
+        return; // Exact retained original receipt, never a new post or backfill.
+      }
+      if (status !== "pending") throw setupMessagePending();
+      if (!options.runtimeBotCredential) throw setupMessagePending();
+      const credential = await options.runtimeBotCredential(row.endpointId);
+      const params = { channel: account.dmChannelId ?? account.externalUserId,
         text: kind === "verification" ? "Your Slack connection is working! Now ask me a question about your Paperclip instance."
-          : `Hi, I’m ${current.agentName}. Your Slack account is connected to Paperclip.`,
-        unfurl_links: "false", unfurl_media: "false" }, await options.runtimeBotToken(row.endpointId));
-      if (typeof sent.channel !== "string" || !/^D[A-Z0-9]+$/.test(sent.channel)) throw new Error("Incomplete message response");
-      result = { ...account, [field]: "sent", dmChannelId: sent.channel };
-    } catch (error) {
-      result = { ...account, [field]: error instanceof Error && "status" in error ? "failed" : "uncertain" };
-    }
-    await saveAccount(row, result, actor, lease);
-    try { await audit(row, actor, `${kind}_${result[field] === "sent" ? "sent" : "failed"}`); }
-    catch { logger.warn({ endpointId: row.endpointId, appId: row.appId }, "Slack setup message activity could not be recorded"); }
+          : `Hi, I’m ${current.agentName}. Your Slack account is connected to Paperclip.`, unfurl_links: "false" as const, unfurl_media: "false" as const };
+      const normalize = (value: unknown) => JSON.parse(JSON.stringify(value));
+      const registrationNow = await registration(row.endpointId);
+      if (!registrationNow || registrationNow.status !== "configured") throw setupMessagePending();
+      const intent: SetupMessageIntent = { schema: 1, kind: "setup-message-intent", operationId: randomUUID(), companyId: row.companyId, endpointId: row.endpointId,
+        messageKind: kind, actorUserId: actor.userId, actorSessionId: actor.sessionId ?? null, originalEndpoint: normalize(current.endpoint), originalConnection: normalize(current.connection),
+        originalRegistration: normalize(registrationNow), originalAccount: normalize(account), runtimeTokenIdentity: credential.identity, tokenHash: setupMessageHash(credential.value), params,
+        directApiAuthority: { apiBaseUrl: "https://slack.com/api/", method: "chat.postMessage" } };
+      await lease.assertOwned();
+      await recovery.begin(intent);
+      await saveAccount(row, { ...account, [field]: "sending" }, actor, lease);
+      let savingOutcome = false;
+      try {
+        const latest = await endpoint(row.endpointId, actor);
+        const latestAccount = latest.endpoint.setup.slackAccount;
+        const exact = (value: unknown) => JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
+        if (exact(normalize(latest.connection)) !== exact(intent.originalConnection) || !latestAccount || latestAccount[field] !== "sending" ||
+            latestAccount.externalUserId !== account.externalUserId || latestAccount.paperclipUserId !== account.paperclipUserId ||
+            latest.endpoint.setup.runtimeGeneration !== current.endpoint.setup.runtimeGeneration || !await options.canWelcome(row.endpointId, account)) throw setupMessagePending();
+        const actual = await options.runtimeBotCredential(row.endpointId);
+        if (exact(actual.identity) !== exact(intent.runtimeTokenIdentity) || setupMessageHash(actual.value) !== intent.tokenHash) throw setupMessagePending();
+        await lease.assertOwned();
+        let raw: import("../../../paperclip-cloud-connector.js").ConnectorRawResponse | undefined;
+        const sent = await api("chat.postMessage", params, actual.value, undefined, async response => { await recovery.recordRaw({ intent, raw: response }); raw = response; });
+        if (!raw) throw setupMessagePending();
+        const result = await recovery.recordResult({ intent, raw, decoded: { channel: String(sent.channel ?? ""), ts: String(sent.ts ?? "") } });
+        savingOutcome = true;
+        await saveAccount(row, { ...account, [field]: "sent", dmChannelId: result.decoded.channel }, actor, lease);
+        await recovery.recordSettlementReturned(result);
+      } catch (error) {
+        // An attempted SQL settlement may already have committed. Never rewrite
+        // it from token/message equality or drop the independent raw result.
+        let cause = error;
+        if (!savingOutcome) {
+          try { await saveAccount(row, { ...account, [field]: "uncertain" }, actor, lease); }
+          catch (cleanupError) { cause = new AggregateError([error, cleanupError], "Setup message outcome and uncertainty persistence failed"); }
+        }
+        throw Object.assign(setupMessagePending(), { cause });
+      }
+      try { await audit(row, actor, `${kind}_sent`); }
+      catch { logger.warn({ endpointId: row.endpointId, appId: row.appId }, "Slack setup message activity could not be recorded"); }
+    });
   }
   async function welcome(row: Registration, actor: SlackSetupActor, lease: CredentialMutationLeaseGuard) {
     await sendSetupMessage(row, actor, lease, "welcome");
@@ -75,6 +136,12 @@ export function createSlackCompletion(store: SlackRegistrationStore) {
     return options.withLock(endpointId, async lease => {
       const row = await registration(endpointId);
       if (!row || row.status !== "configured") return;
+      await assertNoPendingSetupMessageForEndpoint(row.companyId, endpointId);
+      await assertNoPendingRegistrationCleanupForEndpoint(row.companyId, endpointId);
+      await assertNoPendingManagerClaimForEndpoint(row.companyId, endpointId);
+      await assertNoPendingStagedCleanupForEndpoint(row.companyId, endpointId);
+    await assertManagedInstallCompletionAllowed(row.companyId, endpointId);
+    await assertNoPendingSlackInstall(row.companyId, endpointId);
       const [saved] = await db.select({ setup: chatEndpoints.setup, status: chatEndpoints.status }).from(chatEndpoints).where(eq(chatEndpoints.id, endpointId));
       const account = saved?.setup.slackAccount;
       if (!account || !["verifying", "active"].includes(saved.status)) return;
@@ -99,11 +166,14 @@ export function createSlackCompletion(store: SlackRegistrationStore) {
       catch { logger.warn({ endpointId: row.endpointId }, "Slack verification message could not be processed"); }
     }
   }
-  async function resumeLocked(endpointId: string, actor: SlackSetupActor, lease: CredentialMutationLeaseGuard) {
+  async function resumeLocked(endpointId: string, actor: SlackSetupActor, lease: CredentialMutationLeaseGuard, internal?: { deferStagedCleanup?: boolean }) {
     const current = await endpoint(endpointId, actor);
     const row = await registration(endpointId);
     if (!row || row.status === "removed") throw conflict("Slack registration is unavailable");
-    if (row.status === "configured") { await cleanupStaged(endpointId, lease); await welcome(row, actor, lease); return; }
+    await assertNoPendingStagedCleanupForEndpoint(row.companyId, endpointId);
+    await assertManagedInstallCompletionAllowed(row.companyId, endpointId, internal?.deferStagedCleanup === true);
+    await assertNoPendingSlackInstall(row.companyId, endpointId);
+    if (row.status === "configured") { if (!internal?.deferStagedCleanup) await cleanupStaged(endpointId, actor, lease); await welcome(row, actor, lease); return; }
     if (row.status !== "credentials_saved") throw conflict("Install this Slack app before connecting it");
     try {
       assertOrigins(row, current.endpoint.publicId);
@@ -145,20 +215,69 @@ export function createSlackCompletion(store: SlackRegistrationStore) {
     });
     // Runtime now owns a separate vaulted copy. Keep the registration IDs until
     // deletion succeeds so cleanup itself is retryable.
-    await cleanupStaged(endpointId, lease);
+    if (!internal?.deferStagedCleanup) await cleanupStaged(endpointId, actor, lease);
     try { await audit(row, actor, "installation_completed"); }
     catch { logger.warn({ endpointId, appId: row.appId }, "Slack installation activity could not be recorded"); }
     await welcome(row, actor, lease);
   }
-  async function cleanupStaged(endpointId: string, lease: CredentialMutationLeaseGuard) {
-    const row = await registration(endpointId);
-    if (!row || row.status !== "configured") return;
-    const ids = { ...row.secretIds };
-    for (const key of ["botToken", "signingSecret"]) {
-      if (ids[key]) { await lease.assertOwned(); await vault.remove(ids[key]); delete ids[key]; }
-    }
-    await lease.assertOwned();
-    await db.update(chatSlackRegistrations).set({ secretIds: ids }).where(eq(chatSlackRegistrations.endpointId, endpointId));
+  async function cleanupStaged(endpointId: string, actor: SlackSetupActor, lease: CredentialMutationLeaseGuard) {
+    const selected = await endpoint(endpointId, actor);
+    return withAccountHomeSecretMutationLock(undefined, selected.endpoint.companyId, async () => {
+      const current = await endpoint(endpointId, actor);
+      const row = await registration(endpointId);
+      if (!row || row.status !== "configured") return;
+      await assertNoPendingSetupMessageForEndpoint(row.companyId, endpointId);
+      await assertNoPendingRegistrationCleanupForEndpoint(row.companyId, endpointId);
+      await assertNoPendingStagedCleanupForEndpoint(row.companyId, endpointId);
+      await assertNoPendingManagedInstallForEndpoint(row.companyId, endpointId);
+      await assertNoPendingManagerClaimForEndpoint(row.companyId, endpointId);
+      await assertNoPendingSlackInstall(row.companyId, endpointId);
+      const targets: RegistrationCleanupIntent["targets"] = {}, nextSecretIds = { ...row.secretIds };
+      for (const key of ["botToken", "signingSecret"] as const) if (nextSecretIds[key]) {
+        const id = nextSecretIds[key];
+        targets[id] = { key, identity: await readSecretRecoveryIdentity(db, row.companyId, id), tokenOperationId: randomUUID() };
+        delete nextSecretIds[key];
+      }
+      if (!Object.keys(targets).length) return;
+      const normalize = (value: unknown) => JSON.parse(JSON.stringify(value));
+      const exact = (value: unknown) => JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
+      const intent: RegistrationCleanupIntent = { schema: 1, kind: "registration-cleanup-intent", family: "slack.registration.staged-cleanup", operationId: randomUUID(), companyId: row.companyId, endpointId,
+        actorUserId: actor.userId, actorSessionId: actor.sessionId ?? null, originalEndpoint: normalize(current.endpoint), originalConnection: normalize(current.connection), originalRegistration: normalize(row), targets, nextSecretIds };
+      await assertNoPendingManagerRefreshForActor(row.companyId, actor.userId);
+      await assertNoPendingManagerRevokeForActor(row.companyId, actor.userId);
+      await lease.assertOwned();
+      const recovery = registrationCleanupRecovery(row.companyId, endpointId);
+      await recovery.begin(intent);
+      const started = await recovery.read();
+      if (!started) throw registrationCleanupPending();
+      const assertOriginal = async () => {
+        const control = await endpoint(endpointId, actor);
+        const registrationNow = await registration(endpointId);
+        if (exact(normalize(control.endpoint)) !== exact(intent.originalEndpoint) || exact(normalize(control.connection)) !== exact(intent.originalConnection) || exact(normalize(registrationNow ?? null)) !== exact(intent.originalRegistration)) throw registrationCleanupPending();
+        await assertNoPendingManagerRefreshForActor(row.companyId, actor.userId);
+        await assertNoPendingManagerRevokeForActor(row.companyId, actor.userId);
+      };
+      await withRegistrationCleanup(started, async () => {
+        for (const [id, target] of Object.entries(targets)) {
+          await assertOriginal();
+          await lease.assertOwned();
+          if (exact(await readSecretRecoveryIdentity(db, row.companyId, id)) !== exact(target.identity)) throw registrationCleanupPending();
+          const removed = await vault.remove(id);
+          if (!removed || removed.id !== id) throw registrationCleanupPending();
+          await recovery.recordRemovalReturned({ intent, secretId: id });
+        }
+        await assertOriginal();
+        await db.transaction(async tx => {
+          await lease.assertOwned(tx);
+          const [latest] = await tx.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, endpointId)).for("update");
+          if (exact(normalize(latest ?? null)) !== exact(intent.originalRegistration)) throw registrationCleanupPending();
+          await tx.update(chatSlackRegistrations).set({ secretIds: nextSecretIds }).where(eq(chatSlackRegistrations.endpointId, endpointId));
+        });
+        const completed = await recovery.read();
+        if (!completed) throw registrationCleanupPending();
+        await recovery.clear(completed);
+      });
+    });
   }
   return { resumeLocked, notifyVerified, processPendingVerificationMessages, nextVerificationMessageAt };
 }

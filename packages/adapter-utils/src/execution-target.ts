@@ -288,7 +288,7 @@ export interface AdapterExecutionTargetProcessOptions {
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   /** Trusted invocation observation, not a turn completion callback. Called only
    * after local child close or a remotely observed exit, including nonzero exits. */
-  onProcessStopped?: () => void;
+  onProcessStopped?: (proof?: { sshInvocationId: string }) => void;
   terminalResultCleanup?: TerminalResultCleanupOptions;
   /**
    * Sandbox-only: factory from the Paperclip bridge handle that streams the
@@ -935,8 +935,8 @@ export async function runAdapterExecutionTargetProcess(
   // Closing an SSH client on timeout/disconnect does not prove the remote
   // provider exited. SSH status 255 is transport failure, never a stop receipt.
   if (!target || target.kind === "local" ||
-      (!result.timedOut && !result.signal && result.exitCode !== null && result.exitCode >= 0 && result.exitCode < 255)) {
-    options.onProcessStopped?.();
+      (result.remoteProcessStopped && result.sshInvocationId)) {
+    options.onProcessStopped?.(result.sshInvocationId ? { sshInvocationId: result.sshInvocationId } : undefined);
   }
   return result;
 }

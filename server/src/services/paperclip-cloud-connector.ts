@@ -1,3 +1,4 @@
+import { connectorRecoveryAuthoritySchema } from "./connector-recovery-authority.js";
 import { SLACK_MANAGER_SCOPES, ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
 import {
   createDecipheriv,
@@ -261,21 +262,31 @@ export function paperclipCloudConnectorConfigFromEnv(
   };
 }
 
+export type ConnectorRawResponse = { status: number; headers: Record<string, string>; bodyBase64: string };
+export type ConnectorRawResponseObserver = (raw: ConnectorRawResponse) => Promise<void>;
+
 export function createPaperclipCloudConnector(input: {
   config: PaperclipCloudConnectorConfig;
   request?: typeof fetch;
   now?: () => number;
 }) {
-  const config = input.config;
+  // The parsed keys and all request claims/URLs belong to one local snapshot.
+  const config = Object.freeze({ ...input.config });
   const request = input.request ?? fetch;
   const now = input.now ?? Date.now;
   const signingKey = privateKey(config.signPrivateKey, "ed25519");
   const sealKey = privateKey(config.sealPrivateKey, "x25519");
+  const recoveryAuthority = Object.freeze(connectorRecoveryAuthoritySchema.parse({
+    schema: 1, kind: "hosted-sealed", baseUrl: config.baseUrl, instanceId: config.instanceId, environment: config.environment,
+    signingKeySha256: createHash("sha256").update(signingKey.export({ type: "pkcs8", format: "der" })).digest("hex"),
+    sealingKeySha256: createHash("sha256").update(sealKey.export({ type: "pkcs8", format: "der" })).digest("hex"),
+  }));
 
   async function call(
     operation: PaperclipCloudConnectorOperation,
     claims: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; returnUri?: string; returnState?: string; claimId?: string; redemptionId?: string },
     secret?: { field: "refreshToken" | "token" | "binding" | "acknowledgement"; value: string },
+    observeRaw?: ConnectorRawResponseObserver,
   ): Promise<ConnectorResponse> {
     const endpoint = new URL(ENDPOINTS[operation], `${config.baseUrl}/`).toString();
     const issuedAt = Math.floor(now() / 1000);
@@ -308,7 +319,7 @@ export function createPaperclipCloudConnector(input: {
     let response: Response;
     try {
       response = await request(endpoint, {
-        method: "POST",
+        method: "POST", redirect: "error",
         headers: { "content-type": "application/json", accept: "application/json" },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(15_000),
@@ -316,9 +327,42 @@ export function createPaperclipCloudConnector(input: {
     } catch {
       throw new PaperclipCloudConnectorError("Paperclip Cloud connector is unavailable", "CONNECTOR_UNAVAILABLE");
     }
+    // Existing diagnostic-only callers retain their bounded public failure.
+    // An owner requesting raw custody instead joins the complete body below;
+    // a diagnostic timeout never manufactures a captured provider outcome.
+    if (!observeRaw && !response.ok) {
+      const reason = await readBrokerRejectionReason(response);
+      throw new PaperclipCloudConnectorError(
+        `Paperclip Cloud connector rejected the request (operation=${operation}, status=${response.status}, reason=${reason})`,
+        response.status === 409 ? "REAUTHORIZATION_REQUIRED" : "CONNECTOR_REQUEST_FAILED", response.status,
+      );
+    }
+    if (!observeRaw && operation === "revoke" && response.status === 204) return {};
+    const reader = response.body?.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    let readFailed = false;
+    try {
+      if (reader) while (true) {
+        const part = await reader.read();
+        if (part.done) break;
+        size += part.value.byteLength;
+        if (size > 1_048_576) {
+          const error = new PaperclipCloudConnectorError("Paperclip Cloud connector returned an oversized response", "CONNECTOR_BAD_RESPONSE");
+          try { await reader.cancel(); } catch { /* Preserve the original bounded-response failure. */ }
+          throw error;
+        }
+        chunks.push(part.value);
+      }
+    } catch (error) { readFailed = true; throw error; }
+    finally {
+      try { reader?.releaseLock(); } catch (error) { if (!readFailed) throw error; }
+    }
+    const bytes = Buffer.concat(chunks);
+    if (observeRaw) await observeRaw({ status: response.status, headers: Object.fromEntries(response.headers), bodyBase64: bytes.toString("base64") });
     if (operation === "revoke" && response.status === 204) return {};
     if (!response.ok) {
-      const reason = await readBrokerRejectionReason(response);
+      const reason = await readBrokerRejectionReason(new Response(bytes, { headers: response.headers }));
       throw new PaperclipCloudConnectorError(
         `Paperclip Cloud connector rejected the request (operation=${operation}, status=${response.status}, reason=${reason})`,
         response.status === 409 ? "REAUTHORIZATION_REQUIRED" : "CONNECTOR_REQUEST_FAILED",
@@ -326,7 +370,7 @@ export function createPaperclipCloudConnector(input: {
       );
     }
     try {
-      return await response.json() as ConnectorResponse;
+      return JSON.parse(bytes.toString("utf8")) as ConnectorResponse;
     } catch {
       throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid response", "CONNECTOR_BAD_RESPONSE");
     }
@@ -369,6 +413,7 @@ export function createPaperclipCloudConnector(input: {
   }
 
   return {
+    get recoveryAuthority() { return recoveryAuthority; },
     async githubAppsAvailable() {
       const response = await call("status", { subject: "instance-capabilities", companyId: "instance-capabilities" });
       return response.active === true && response.githubApps?.version === 2;
@@ -472,22 +517,22 @@ export function createPaperclipCloudConnector(input: {
         ...(handoff ? { handoff } : {}),
       };
     },
-    async claim(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; claimId: string; redemptionId: string }) {
+    async claim(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; claimId: string; redemptionId: string }, observeRaw?: ConnectorRawResponseObserver) {
       const profile = values.profile ?? "gmail.draft";
-      return openCredentials(await call("claim", { ...values, profile }), sealPurpose("initial", profile), values.subject, values.companyId, profile);
+      return openCredentials(await call("claim", { ...values, profile }, undefined, observeRaw), sealPurpose("initial", profile), values.subject, values.companyId, profile);
     },
-    async refresh(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; refreshToken: string }) {
+    async refresh(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; refreshToken: string }, observeRaw?: ConnectorRawResponseObserver) {
       const profile = values.profile ?? "gmail.draft";
       return openCredentials(
-        await call("refresh", { ...values, profile }, { field: "refreshToken", value: values.refreshToken }),
+        await call("refresh", { ...values, profile }, { field: "refreshToken", value: values.refreshToken }, observeRaw),
         sealPurpose("access", profile),
         values.subject,
         values.companyId,
         profile,
       );
     },
-    async revoke(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; token: string }) {
-      await call("revoke", { ...values, profile: values.profile ?? "gmail.draft" }, { field: "token", value: values.token });
+    async revoke(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; token: string }, observeRaw?: ConnectorRawResponseObserver) {
+      await call("revoke", { ...values, profile: values.profile ?? "gmail.draft" }, { field: "token", value: values.token }, observeRaw);
     },
     async setWebhookBinding(values: {
       subject: string;

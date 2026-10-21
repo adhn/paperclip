@@ -31,6 +31,10 @@ export interface PhotonReceiverOptions {
  * advances the checkpoint, so cross-stream ordering can never skip an event. */
 export class PhotonReceiver {
   private stopped = false;
+  private closeTask?: Promise<void>;
+  private readonly cleanupFailures: unknown[] = [];
+  private readonly readers = new Set<Promise<void>>();
+  private readonly catchUps = new Set<Promise<void>>();
   private streams: Array<TypedEventStream<LiveEvent>> = [];
   private running?: Promise<void>;
   private requested = false;
@@ -40,14 +44,14 @@ export class PhotonReceiver {
   start(): void {
     if (this.stopped || this.timer) return;
     const { client } = this.options;
-    this.streams = [
-      client.messages.subscribeEvents(),
-      client.chats.subscribeEvents(),
-      ...(this.options.allocation === "shared" ? [] : [client.groups.subscribeEvents()]),
-      client.polls.subscribeEvents(),
-    ];
+    // Retain each handle immediately: a later synchronous subscription failure
+    // must not orphan transports created earlier during initialization.
+    this.streams.push(client.messages.subscribeEvents());
+    this.streams.push(client.chats.subscribeEvents());
+    if (this.options.allocation !== "shared") this.streams.push(client.groups.subscribeEvents());
+    this.streams.push(client.polls.subscribeEvents());
     for (const stream of this.streams) {
-      void (async () => {
+      const reader = (async () => {
         try {
           for await (const _event of stream) {
             if (this.stopped) break;
@@ -61,6 +65,8 @@ export class PhotonReceiver {
           if (!this.stopped) await this.options.failure(error);
         }
       })().catch(() => {});
+      this.readers.add(reader);
+      void reader.then(() => this.readers.delete(reader));
     }
     this.timer = setInterval(() => this.request(), 15_000);
     this.timer.unref();
@@ -84,10 +90,21 @@ export class PhotonReceiver {
       });
   }
   /** Exposed for deterministic recovery tests, never an external route. */
-  async catchUp(): Promise<void> {
+  catchUp(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    const task = this.performCatchUp();
+    this.catchUps.add(task);
+    void task.then(
+      () => this.catchUps.delete(task),
+      () => this.catchUps.delete(task),
+    );
+    return task;
+  }
+  private async performCatchUp(): Promise<void> {
     const { state, lineId, client, assertOwned, admit, intakeAfter } =
       this.options;
     await assertOwned();
+    if (this.stopped) return;
     const original = await state.read<Checkpoint>("checkpoint");
     if (!original && (await state.read("receiver-initialized")))
       throw new PhotonError(
@@ -105,6 +122,7 @@ export class PhotonReceiver {
         "history_gap",
         "Photon checkpoint is invalid; operator recovery is required",
       );
+    if (this.stopped) return;
     const shared = this.options.allocation === "shared";
     let sequence = original?.sequence;
     let batchEvents = 0;
@@ -116,6 +134,7 @@ export class PhotonReceiver {
       for await (const event of stream) {
         if (this.stopped) return;
         await assertOwned();
+        if (this.stopped) return;
         if (event.type === "catchup.complete") {
           if (
             !Number.isSafeInteger(event.headSequence) ||
@@ -173,7 +192,7 @@ export class PhotonReceiver {
           "Photon catch-up ended before its checkpoint barrier",
         );
     } finally {
-      await stream.close();
+      await this.closeStream(stream);
       if (this.catchUpStream === stream) this.catchUpStream = undefined;
     }
   }
@@ -188,12 +207,36 @@ export class PhotonReceiver {
     );
   }
 
-  async close(): Promise<void> {
+  private async closeStream(stream: { close(): Promise<void> }): Promise<void> {
+    try { await stream.close(); }
+    catch (error) {
+      // Also retain failures first discovered by catch-up's normal finally path.
+      // A subsequent SDK close may resolve without repeating failed cleanup.
+      this.cleanupFailures.push(error);
+      throw error;
+    }
+  }
+
+  close(): Promise<void> {
+    // SDK streams may mark themselves closed before cleanup rejects, making a
+    // second close a successful no-op. Retain this exact attempt permanently;
+    // a local retry must never convert unresolved cleanup into lease release.
+    if (this.closeTask) return this.closeTask;
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
-    await this.catchUpStream?.close();
-    await Promise.allSettled(this.streams.map((stream) => stream.close()));
-    // client.close interrupts a blocked catch-up RPC during runtime shutdown.
+    // Close every transport even if one fails, then join application callbacks
+    // already admitted beyond transport I/O. No new task is admitted after stop.
+    this.closeTask = (async () => {
+      const closed = await Promise.allSettled([
+        ...this.streams.map((stream) => Promise.resolve().then(() => this.closeStream(stream))),
+        Promise.resolve().then(() => this.catchUpStream ? this.closeStream(this.catchUpStream) : undefined),
+      ]);
+      await Promise.allSettled([...this.readers, ...this.catchUps, ...(this.running ? [this.running] : [])]);
+      if (this.cleanupFailures.length) throw this.cleanupFailures[0];
+      const failure = closed.find((result) => result.status === "rejected");
+      if (failure?.status === "rejected") throw failure.reason;
+    })();
+    return this.closeTask;
   }
 }
 

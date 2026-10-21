@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { readSecretRecoveryIdentity } from "../services/secret-recovery-identity.js";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import os from "node:os";
@@ -28,6 +29,8 @@ import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provid
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { SecretProviderClientError } from "../secrets/types.js";
 import { secretService } from "../services/secrets.js";
+import * as quotaRecovery from "../services/quota-credential-recovery.js";
+import { slackInstallRecovery, withSlackInstallResultSettlement, type SlackInstallIntent, type SlackInstallResult } from "../services/connectors/slack/setup/install-recovery.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -2725,7 +2728,7 @@ describeEmbeddedPostgres("secretService", () => {
     );
   });
 
-  it("removes provider vault config locally without deleting remote AWS secrets", async () => {
+  it("retains provider vault config while external AWS references still need its identity", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
     const vault = await svc.createProviderConfig(companyId, awsVaultInput());
@@ -2738,15 +2741,15 @@ describeEmbeddedPostgres("secretService", () => {
     });
     const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
 
-    const removed = await svc.removeProviderConfig(vault.id);
-
-    expect(removed?.id).toBe(vault.id);
-    await expect(svc.getProviderConfigById(vault.id)).resolves.toBeNull();
+    await expect(svc.removeProviderConfig(vault.id)).rejects.toMatchObject({
+      status: 409, details: { code: "secret_provider_config_in_use", providerConfigId: vault.id },
+    });
+    await expect(svc.getProviderConfigById(vault.id)).resolves.toMatchObject({ id: vault.id });
     const [persistedSecret] = await db
       .select()
       .from(companySecrets)
       .where(eq(companySecrets.id, secret.id));
-    expect(persistedSecret?.providerConfigId).toBeNull();
+    expect(persistedSecret?.providerConfigId).toBe(vault.id);
     expect(deleteSpy).not.toHaveBeenCalled();
   });
 
@@ -3710,7 +3713,7 @@ describeEmbeddedPostgres("secretService", () => {
         value: "new-admin-key",
         externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/other",
       }),
-    ).rejects.toThrow(/not both/);
+    ).rejects.toMatchObject({ status: 409, details: { code: "secret_provider_owner_migration_unavailable" } });
     await expect(
       svc.rotate(secret.id, { value: "new-admin-key", providerVersionRef: "pinned-1" }),
     ).rejects.toThrow(/cannot pin/i);
@@ -4012,6 +4015,102 @@ describeEmbeddedPostgres("secretService", () => {
     );
   });
 
+  it("refuses remote managed key rename without relabeling the original AWS namespace", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const vault = await svc.createProviderConfig(companyId, awsVaultInput());
+    const externalRef = `arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod/${companyId}/original_key`;
+    const [secret] = await db.insert(companySecrets).values({
+      companyId, key: "original_key", name: "Original Namespace", provider: "aws_secrets_manager",
+      providerConfigId: vault.id, managedMode: "paperclip_managed", externalRef, latestVersion: 1, status: "active",
+    }).returning();
+    await db.insert(companySecretVersions).values(managedAwsVersionRow(secret.id, externalRef));
+    const versions = await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, secret.id));
+    const write = vi.spyOn(awsSecretsManagerProvider, "createVersion");
+    const cleanup = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive");
+    const resolve = vi.spyOn(awsSecretsManagerProvider, "resolveVersion");
+    await expect(svc.update(secret.id, { key: "different_key", name: "Must not commit" }))
+      .rejects.toMatchObject({ status: 409, details: { code: "secret_provider_owner_migration_unavailable" } });
+    expect(write).not.toHaveBeenCalled();
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(await svc.getById(secret.id)).toEqual(secret);
+    expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, secret.id))).toEqual(versions);
+    await expect(svc.update(secret.id, { key: "  original_key  ", name: "Display name only" }))
+      .resolves.toMatchObject({ key: "original_key", name: "Display name only", externalRef });
+  });
+
+  it("keeps local encrypted key rename available without changing stored material", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, { key: "local_original", name: "Local Rename", provider: "local_encrypted", value: "unchanged-local-value" });
+    const versions = await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, secret.id));
+    await expect(svc.update(secret.id, { key: "local_renamed" })).resolves.toMatchObject({ key: "local_renamed", latestVersion: 1 });
+    expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, secret.id))).toEqual(versions);
+    expect(await svc.resolveSecretValue(companyId, secret.id, "latest")).toBe("unchanged-local-value");
+  });
+
+  for (const migration of ["vault", "reference"] as const) {
+    it(`refuses new ${migration} rotation migration before provider or database effects`, async () => {
+      const companyId = await seedCompany();
+      const svc = secretService(db);
+      const originalVault = await svc.createProviderConfig(companyId, awsVaultInput());
+      const replacementVault = await svc.createProviderConfig(companyId, { ...awsVaultInput(), displayName: "Other owner", config: { region: "eu-west-1" } });
+      const originalRef = "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/original-owner";
+      const [secret] = await db.insert(companySecrets).values({
+        companyId, key: "retained-owner", name: "Retained Owner", provider: "aws_secrets_manager",
+        providerConfigId: originalVault.id, managedMode: "external_reference", externalRef: originalRef,
+        latestVersion: 1, status: "active",
+      }).returning();
+      await db.insert(companySecretVersions).values({ ...managedAwsVersionRow(secret.id, originalRef),
+        material: { scheme: "aws_secrets_manager_v1", source: "external_reference", secretId: originalRef, versionId: "aws-version-1" },
+      });
+      const versions = await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, secret.id));
+      const create = vi.spyOn(awsSecretsManagerProvider, "createVersion");
+      const link = vi.spyOn(awsSecretsManagerProvider, "linkExternalSecret");
+      const update = vi.spyOn(awsSecretsManagerProvider, "updateExternalSecretValue");
+      const cleanup = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive");
+      await expect(svc.rotate(secret.id, migration === "vault"
+        ? { providerConfigId: replacementVault.id, providerVersionRef: "aws-version-2" }
+        : { externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/different-owner", providerVersionRef: "aws-version-2" },
+      )).rejects.toMatchObject({ status: 409, details: { code: "secret_provider_owner_migration_unavailable" } });
+      expect(create).not.toHaveBeenCalled();
+      expect(link).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(await svc.getById(secret.id)).toEqual(secret);
+      expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, secret.id))).toEqual(versions);
+      expect(await svc.getProviderConfigById(originalVault.id)).toEqual(originalVault);
+    });
+  }
+
+  for (const mode of ["external_reference", "paperclip_managed"] as const) {
+    it(`allows same-owner ${mode} rotation with a normalized no-op reference`, async () => {
+      const companyId = await seedCompany();
+      const svc = secretService(db);
+      const vault = await svc.createProviderConfig(companyId, awsVaultInput());
+      const externalRef = "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/same-owner";
+      const [secret] = await db.insert(companySecrets).values({
+        companyId, key: "same-owner", name: "Same Owner", provider: "aws_secrets_manager",
+        providerConfigId: vault.id, managedMode: mode, externalRef, latestVersion: 1, status: "active",
+      }).returning();
+      await db.insert(companySecretVersions).values(managedAwsVersionRow(secret.id, externalRef));
+      const original = await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, secret.id));
+      const prepared = preparedAwsVersion(externalRef, "aws-version-2", "next-hash", "next-fingerprint");
+      const write = mode === "external_reference"
+        ? vi.spyOn(awsSecretsManagerProvider, "linkExternalSecret").mockResolvedValue(prepared)
+        : vi.spyOn(awsSecretsManagerProvider, "createVersion").mockResolvedValue(prepared);
+      const result = await svc.rotate(secret.id, {
+        providerConfigId: vault.id, externalRef: `  ${externalRef}  `,
+        ...(mode === "external_reference" ? { providerVersionRef: "aws-version-2" } : { value: "replacement" }),
+      });
+      expect(write).toHaveBeenCalledOnce();
+      expect(result).toMatchObject({ latestVersion: 2, providerConfigId: vault.id, externalRef });
+      const previous = await db.select().from(companySecretVersions).where(and(eq(companySecretVersions.secretId, secret.id), eq(companySecretVersions.version, 1)));
+      expect(previous).toEqual([{ ...original[0], status: "previous" }]);
+    });
+  }
+
   it("rejects generic soft deletion for managed secrets", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
@@ -4168,49 +4267,262 @@ describeEmbeddedPostgres("secretService", () => {
     expect(persisted).toBeNull();
   });
 
-  it("removes DB rows even when the attached provider vault is disabled", async () => {
+  for (const status of ["active", "deleted"] as const) {
+    it(`refuses ${status} secret deletion before effects when retained exchange identity needs inspection`, async () => {
+      const companyId = await seedCompany();
+      const svc = secretService(db);
+      const vault = await svc.createProviderConfig(companyId, awsVaultInput());
+      const secretId = randomUUID();
+      const externalRef = "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/pending-exchange";
+      const suffix = status === "deleted" ? `__deleted__${secretId}` : "";
+      const [secret] = await db.insert(companySecrets).values({
+        id: secretId, companyId, key: `exchange-identity${suffix}`, name: `Exchange Identity${suffix}`,
+        provider: "aws_secrets_manager", providerConfigId: vault.id, managedMode: "paperclip_managed",
+        externalRef, latestVersion: 1, status, deletedAt: status === "deleted" ? new Date() : null,
+      }).returning();
+      await db.insert(companySecretVersions).values(managedAwsVersionRow(secret.id, externalRef));
+      const versions = await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, secret.id));
+      // The scanner owns discovery even with no current grant refs. Its actual
+      // encrypted directory inventory is verified separately by journal tests.
+      const scan = vi.spyOn(quotaRecovery, "assertNoPendingQuotaCredentialForSecret")
+        .mockRejectedValueOnce(new Error("quota_credential_exchange_pending"));
+      const cleanup = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+      await expect(svc.remove(secret.id)).rejects.toMatchObject({ status: 409,
+        details: { code: "secret_credential_recovery_pending", secretId: secret.id },
+      });
+      expect(scan).toHaveBeenCalledWith(companyId, secret.id);
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(await svc.getById(secret.id)).toEqual(secret);
+      expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, secret.id))).toEqual(versions);
+      scan.mockResolvedValue();
+      await svc.remove(secret.id);
+      expect(cleanup).toHaveBeenCalledOnce();
+      expect(await svc.getById(secret.id)).toBeNull();
+    });
+  }
+
+  async function retainedSlackSecrets(kind: "intent" | "result") {
     const companyId = await seedCompany();
     const svc = secretService(db);
-    const vault = await svc.createProviderConfig(companyId, {
-      provider: "aws_secrets_manager",
-      displayName: "AWS disabled later",
-      config: {
-        region: "us-east-1",
-        namespace: "prod",
+    const client = await svc.create(companyId, { name: `slack-client-${randomUUID()}`, provider: "local_encrypted", value: "original-client" });
+    const bot = await svc.create(companyId, { name: `slack-bot-${randomUUID()}`, provider: "local_encrypted", value: "original-bot" });
+    const intent: SlackInstallIntent = {
+      schema: 1, kind: "slack-install-intent", operationId: randomUUID(), companyId,
+      endpointId: randomUUID(), connectionId: randomUUID(), requestId: randomUUID(),
+      state: `slack-install.${"a".repeat(43)}`, appId: "A1", clientId: "client1", callbackUri: "https://fixture.invalid/callback",
+      runtimeGeneration: 1, actorUserId: "installer", actorSessionId: null, requestedScopes: ["chat:write"],
+      codeHash: "a".repeat(64), secretIds: { clientSecret: client.id, botToken: bot.id },
+      originalBotTokenHash: createHash("sha256").update("original-bot").digest("hex"),
+      originalClientSecretHash: createHash("sha256").update("original-client").digest("hex"),
+      managerGrantId: null, originalWorkspaceId: null, originalBotUserId: null,
+      originalProviderAccountId: null, originalBotExternalId: null, originalAccount: {},
+      originalSecretIdentities: {
+        clientSecret: await readSecretRecoveryIdentity(db, companyId, client.id),
+        botToken: await readSecretRecoveryIdentity(db, companyId, bot.id),
       },
+    };
+    const token = "xoxb-exact-result-fixture";
+    const result: SlackInstallResult = { schema: 1, kind: "slack-install-result", intent,
+      raw: { status: 200, headers: {}, bodyBase64: Buffer.from(JSON.stringify({ ok: true, app_id: "A1", token_type: "bot", access_token: token })).toString("base64") } };
+    const journal = slackInstallRecovery(companyId, intent.endpointId);
+    await journal.beginExchange(intent);
+    if (kind === "result") await journal.completeExchange(result);
+    return { svc, client, bot, companyId, journal, result, token };
+  }
+
+  for (const kind of ["intent", "result"] as const) {
+    it(`retains original client and bot DB identity against every mutation while Slack ${kind} is unresolved`, async () => {
+      const priorHome = process.env.PAPERCLIP_HOME;
+      process.env.PAPERCLIP_HOME = path.join(secretsTmpDir, `slack-retained-${randomUUID()}`);
+      try {
+        const f = await retainedSlackSecrets(kind);
+        const create = vi.spyOn(localEncryptedProvider, "createVersion");
+        const cleanup = vi.spyOn(localEncryptedProvider, "deleteOrArchive");
+        for (const secret of [f.client, f.bot]) {
+          const versions = await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, secret.id));
+          for (const action of [
+            () => f.svc.rotate(secret.id, { value: "unrelated-replacement" }),
+            () => f.svc.update(secret.id, { status: "archived" }),
+            () => f.svc.update(secret.id, { key: `renamed-${secret.id}` }),
+            () => f.svc.remove(secret.id),
+          ]) {
+            await expect(action()).rejects.toMatchObject({ status: 409, details: { code: "secret_credential_recovery_pending" } });
+            expect(await f.svc.getById(secret.id)).toEqual(secret);
+            expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, secret.id))).toEqual(versions);
+          }
+        }
+        expect(create).not.toHaveBeenCalled();
+        expect(cleanup).not.toHaveBeenCalled();
+        expect((await f.journal.read())?.kind).toBe(`slack-install-${kind}`);
+      } finally {
+        if (priorHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = priorHome;
+      }
     });
-    const externalRef =
-      "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod/company-1/openai-api-key";
-    const secret = await db
-      .insert(companySecrets)
-      .values({
-        companyId,
-        key: "openai-api-key",
-        name: "OpenAI API Key",
-        provider: "aws_secrets_manager",
-        providerConfigId: vault.id,
-        managedMode: "paperclip_managed",
-        externalRef,
-        latestVersion: 1,
-        status: "active",
-      })
-      .returning()
-      .then((rows) => rows[0]);
+  }
 
-    await db.insert(companySecretVersions).values(managedAwsVersionRow(secret.id, externalRef));
-    await svc.disableProviderConfig(vault.id);
-    const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
-
-    await expect(svc.remove(secret.id)).resolves.toMatchObject({ id: secret.id });
-    const persisted = await db
-      .select()
-      .from(companySecrets)
-      .where(eq(companySecrets.id, secret.id))
-      .then((rows) => rows[0] ?? null);
-
-    expect(deleteSpy).not.toHaveBeenCalled();
-    expect(persisted).toBeNull();
+  it("permits only the exact retained Slack bot result rotation within its live settlement scope", async () => {
+    const priorHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = path.join(secretsTmpDir, `slack-settlement-${randomUUID()}`);
+    try {
+      const f = await retainedSlackSecrets("result");
+      const clientVersions = await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, f.client.id));
+      const create = vi.spyOn(localEncryptedProvider, "createVersion");
+      const cleanup = vi.spyOn(localEncryptedProvider, "deleteOrArchive");
+      await withSlackInstallResultSettlement(f.result, async () => {
+        for (const action of [
+          () => f.svc.rotate(f.client.id, { value: f.token }),
+          () => f.svc.rotate(f.bot.id, { value: "xoxb-different-result" }),
+          () => f.svc.update(f.bot.id, { status: "archived" }),
+          () => f.svc.remove(f.bot.id),
+        ]) await expect(action()).rejects.toMatchObject({ status: 409, details: { code: "secret_credential_recovery_pending" } });
+        expect(create).not.toHaveBeenCalled();
+        expect(cleanup).not.toHaveBeenCalled();
+        await f.svc.rotate(f.bot.id, { value: f.token });
+      });
+      expect(create).toHaveBeenCalledOnce();
+      expect(await f.svc.getById(f.client.id)).toEqual(f.client);
+      expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, f.client.id))).toEqual(clientVersions);
+      const botNow = await f.svc.getById(f.bot.id);
+      expect(botNow?.latestVersion).toBe(f.bot.latestVersion + 1);
+      const botVersions = await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, f.bot.id));
+      const settledVersion = botVersions.find(version => version.version === botNow?.latestVersion)!;
+      expect(await localEncryptedProvider.resolveVersion({ material: settledVersion.material, externalRef: null })).toBe(f.token);
+      await expect(f.svc.rotate(f.bot.id, { value: f.token })).rejects.toMatchObject({ status: 409 });
+      expect(create).toHaveBeenCalledOnce();
+      expect(await f.svc.getById(f.bot.id)).toEqual(botNow);
+      expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, f.bot.id))).toEqual(botVersions);
+      expect((await f.journal.read())?.kind).toBe("slack-install-result");
+    } finally {
+      if (priorHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = priorHome;
+    }
   });
+
+  for (const unavailable of ["disabled", "coming_soon", "missing_lookup"] as const) {
+    it(`retains exact cleanup tombstone for a ${unavailable} provider vault and retries`, async () => {
+      const companyId = await seedCompany();
+      const svc = secretService(db);
+      const vault = await svc.createProviderConfig(companyId, {
+        provider: "aws_secrets_manager", displayName: "AWS cleanup retained",
+        config: { region: "us-east-1", namespace: "prod" },
+      });
+      const externalRef = "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod/company-1/cleanup-retained";
+      const [secret] = await db.insert(companySecrets).values({
+        companyId, key: "cleanup-retained", name: "Cleanup Retained",
+        provider: "aws_secrets_manager", providerConfigId: vault.id,
+        managedMode: "paperclip_managed", externalRef, latestVersion: 1, status: "active",
+      }).returning();
+      await db.insert(companySecretVersions).values(managedAwsVersionRow(secret.id, externalRef));
+      const versionBefore = await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, secret.id));
+      const deleteSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+      if (unavailable === "missing_lookup") {
+        // Inject only the missing vault lookup; keep actual secret/version rows
+        // and the FK identity intact for retention and exact retry assertions.
+        const select = db.select.bind(db);
+        vi.spyOn(db, "select").mockImplementation(((...args: unknown[]) => {
+          const query = Reflect.apply(select, db, args);
+          const from = query.from.bind(query);
+          query.from = ((table: unknown) => table === companySecretProviderConfigs
+            ? { where: () => Promise.resolve([]) }
+            : from(table as never)) as typeof query.from;
+          return query;
+        }) as typeof db.select);
+      } else {
+        await db.update(companySecretProviderConfigs).set({ status: unavailable }).where(eq(companySecretProviderConfigs.id, vault.id));
+      }
+      await expect(svc.remove(secret.id)).rejects.toMatchObject({
+        status: 409, details: { code: "secret_provider_cleanup_pending", providerConfigId: vault.id },
+      });
+      expect(deleteSpy).not.toHaveBeenCalled();
+      const [retained] = await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id));
+      expect(retained).toMatchObject({ status: "deleted", providerConfigId: vault.id,
+        externalRef, latestVersion: 1, key: `cleanup-retained__deleted__${secret.id}` });
+      expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, secret.id))).toEqual(versionBefore);
+      vi.restoreAllMocks();
+      await db.update(companySecretProviderConfigs).set({ status: "ready" }).where(eq(companySecretProviderConfigs.id, vault.id));
+      const retry = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+      await expect(svc.remove(secret.id)).resolves.toMatchObject({ id: secret.id });
+      expect(retry).toHaveBeenCalledOnce();
+      expect(retry).toHaveBeenCalledWith(expect.objectContaining({
+        providerConfig: expect.objectContaining({ id: vault.id, provider: "aws_secrets_manager" }),
+        externalRef, material: managedAwsVersionRow(secret.id, externalRef).material,
+        context: { companyId, secretKey: "cleanup-retained", secretName: "Cleanup Retained", version: 1 },
+        mode: "delete",
+      }));
+      expect(await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id))).toEqual([]);
+      expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, secret.id))).toEqual([]);
+    });
+  }
+
+  for (const status of ["active", "deleted"] as const) {
+    it(`retains an exact provider config referenced by an ${status} secret until cleanup succeeds`, async () => {
+      const companyId = await seedCompany();
+      const svc = secretService(db);
+      const vault = await svc.createProviderConfig(companyId, {
+        provider: "aws_secrets_manager", displayName: "AWS retained identity",
+        config: { region: "us-east-1", namespace: "prod" },
+      });
+      const externalRef = "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod/company-1/vault-reference";
+      const id = randomUUID();
+      await db.insert(companySecrets).values({ id, companyId,
+        key: status === "deleted" ? `vault-reference__deleted__${id}` : "vault-reference",
+        name: status === "deleted" ? `Vault Reference__deleted__${id}` : "Vault Reference",
+        provider: "aws_secrets_manager", providerConfigId: vault.id,
+        managedMode: "paperclip_managed", externalRef, latestVersion: 1, status,
+        ...(status === "deleted" ? { deletedAt: new Date() } : {}),
+      });
+      await db.insert(companySecretVersions).values(managedAwsVersionRow(id, externalRef));
+      const cleanup = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+      await expect(svc.removeProviderConfig(vault.id)).rejects.toMatchObject({
+        status: 409, details: { code: "secret_provider_config_in_use", providerConfigId: vault.id },
+      });
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(await db.select().from(companySecretProviderConfigs).where(eq(companySecretProviderConfigs.id, vault.id))).toHaveLength(1);
+      const [retained] = await db.select().from(companySecrets).where(eq(companySecrets.id, id));
+      expect(retained.providerConfigId).toBe(vault.id);
+      await svc.remove(id);
+      expect(cleanup).toHaveBeenCalledOnce();
+      await expect(svc.removeProviderConfig(vault.id)).resolves.toMatchObject({ id: vault.id });
+      expect(await db.select().from(companySecretProviderConfigs).where(eq(companySecretProviderConfigs.id, vault.id))).toEqual([]);
+    });
+  }
+
+  for (const status of ["active", "deleted"] as const) {
+    it(`refuses to replace the physical vault payload retained by an ${status} secret`, async () => {
+      const companyId = await seedCompany();
+      const svc = secretService(db);
+      const vault = await svc.createProviderConfig(companyId, {
+        provider: "aws_secrets_manager", displayName: "Original vault",
+        config: { region: "us-east-1", namespace: "prod" },
+      });
+      const id = randomUUID();
+      const externalRef = "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod/company-1/vault-payload";
+      await db.insert(companySecrets).values({ id, companyId,
+        key: status === "deleted" ? `vault-payload__deleted__${id}` : "vault-payload",
+        name: status === "deleted" ? `Vault Payload__deleted__${id}` : "Vault Payload",
+        provider: "aws_secrets_manager", providerConfigId: vault.id, managedMode: "paperclip_managed",
+        externalRef, latestVersion: 1, status,
+        ...(status === "deleted" ? { deletedAt: new Date() } : {}),
+      });
+      await db.insert(companySecretVersions).values(managedAwsVersionRow(id, externalRef));
+      const cleanup = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+      await expect(svc.updateProviderConfig(vault.id, {
+        displayName: "Must not commit", config: { region: "eu-west-1", namespace: "other" },
+      })).rejects.toMatchObject({ status: 409, details: { code: "secret_provider_config_in_use" } });
+      expect(await svc.getProviderConfigById(vault.id)).toEqual(vault);
+      expect(cleanup).not.toHaveBeenCalled();
+      // Reordering identical normalized payload keys is a semantic no-op.
+      await expect(svc.updateProviderConfig(vault.id, {
+        displayName: "Renamed safely", config: Object.fromEntries(Object.entries(vault.config).reverse()),
+      })).resolves.toMatchObject({ id: vault.id, displayName: "Renamed safely", config: vault.config });
+      await svc.updateProviderConfig(vault.id, { status: "disabled" });
+      await expect(svc.remove(id)).rejects.toMatchObject({ details: { code: "secret_provider_cleanup_pending" } });
+      await svc.updateProviderConfig(vault.id, { status: "ready", isDefault: true });
+      await svc.remove(id);
+      expect(cleanup).toHaveBeenCalledWith(expect.objectContaining({ providerConfig: expect.objectContaining({ id: vault.id, config: vault.config }) }));
+      await expect(svc.updateProviderConfig(vault.id, { config: { region: "eu-west-1", namespace: "other" } }))
+        .resolves.toMatchObject({ config: expect.objectContaining({ region: "eu-west-1", namespace: "other" }) });
+    });
+  }
 
   it("refuses to resolve secrets once they are disabled or archived", async () => {
     const companyId = await seedCompany();

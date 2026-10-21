@@ -7,13 +7,18 @@
 // creates the runtime), the synchronous plan, and Amendment B — no run-scoped
 // contribution or bridge token escapes into the ledger or the reuse payload.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createSandboxRunSite,
+  inspectStagingLeaseRetention,
+  AcpxStagedRuntimeCleanupError,
+  AcpxBridgeStartupError,
+  AcpxStagingWaitAbortedError,
   type ManagedHomeSeamResult,
   type SandboxRunSiteOptions,
   type StagedRuntimeStoreEntry,
 } from "./run-site-sandbox.js";
+import { AcpxStartupCancellationError, cancellableSandboxStartup } from "./startup-cancellation.js";
 import type {
   AcpRunContext,
   AcquiredRunResources,
@@ -314,5 +319,298 @@ describe("sandbox run site", () => {
       const payload: SandboxReuseCandidate = contribution;
       void payload;
     }
+  });
+});
+
+
+describe("sandbox admission failure ownership", () => {
+  it.each([undefined, null, false, 0, ""])("refuses a rejected bridge even with falsy reason %s", async reason => {
+    let launches = 0;
+    const { site } = makeSite({
+      startPaperclipBridge: async () => { throw reason; },
+      startProcessSessionBridge: async () => null,
+      finalizeLaunchEnv: () => { launches++; return {}; },
+    });
+    await site.placeWorkspace(makeContext("falsy-bridge"));
+    const outcome = await site.startTransport(makeContext("falsy-bridge")).then(
+      () => ({ rejected: false, reason: "unexpected success" }), error => ({ rejected: true, reason: error }));
+    expect(outcome).toEqual({ rejected: true, reason });
+    expect(launches).toBe(0);
+  });
+
+  it.each([undefined, new Error("private seam marker")])("preserves original seam rejection after successful actual disposal", async original => {
+    let disposed: unknown;
+    const { site, freshStaged, bridgeCalls } = makeSite({
+      seedManagedHome: async stage => { await stage([]); throw original; },
+      disposeFreshStagedRuntime: async staged => { disposed = staged; },
+    });
+    const outcome = await site.placeWorkspace(makeContext("failed-seam")).then(
+      () => ({ rejected: false, error: null }), error => ({ rejected: true, error }));
+    expect(outcome.rejected).toBe(true); expect(outcome.error).toBe(original);
+    expect(disposed).toBe(freshStaged); expect(bridgeCalls).toEqual([]);
+  });
+
+  it.each([undefined, new Error("private cleanup marker")])("retains causal seam and disposal failures privately", async cleanup => {
+    const original = new Error("private seam marker");
+    const { site, freshStaged, bridgeCalls } = makeSite({
+      seedManagedHome: async stage => { await stage([]); throw original; },
+      disposeFreshStagedRuntime: async () => { throw cleanup; },
+    });
+    const error = await site.placeWorkspace(makeContext("failed-cleanup")).catch(error => error);
+    expect(error).toBeInstanceOf(AcpxStagedRuntimeCleanupError);
+    expect(AcpxStagedRuntimeCleanupError.inspect(error)).toEqual({ orderedFailures: [original, cleanup],
+      stagedRuntime: freshStaged, runtimeRootDir: freshStaged.runtimeRootDir });
+    expect(bridgeCalls).toEqual([]);
+    const serialized = JSON.stringify(error) + Object.getOwnPropertyNames(error).map(key => String(error[key])).join(" ");
+    expect(serialized).not.toContain("private seam marker"); expect(serialized).not.toContain("private cleanup marker");
+    expect(serialized).not.toContain(freshStaged.runtimeRootDir);
+    expect(Object.getOwnPropertyNames(error)).not.toContain("cause");
+    expect(Object.getOwnPropertyNames(error)).not.toContain("errors");
+  });
+});
+
+
+describe("staged unknown cleanup occupancy", () => {
+  it("retains stale exact entry and same-key lease after failed actual disposal without staging a successor", async () => {
+    let stages = 0, disposals = 0;
+    const { site, stagedRuntimes, stagingLocks, options } = makeSite({ stage: async () => { stages++; return makeStagedRuntime("new"); } });
+    const old = { stagedRuntime: makeStagedRuntime("old"), envDelta: {}, teardown: null,
+      dispose: async () => { disposals++; throw undefined; }, lastUsedAt: 0 };
+    stagedRuntimes.set("occupied", old);
+    const error = await site.placeWorkspace(makeContext("occupied")).catch(error => error);
+    expect(error).toBeInstanceOf(AcpxStagedRuntimeCleanupError);
+    expect(stagedRuntimes.get("occupied")).toBe(old); expect(stagingLocks.has("occupied")).toBe(true);
+    let successorReturned = false;
+    void createSandboxRunSite(options).placeWorkspace(makeContext("occupied")).then(() => { successorReturned = true; });
+    await Promise.resolve(); await Promise.resolve();
+    expect(successorReturned).toBe(false); expect(stages).toBe(0); expect(disposals).toBe(1);
+    // An occupied idle key does not block unrelated keys or trigger another dispose.
+    await site.reuse().evictIdle(100000);
+    const other = createSandboxRunSite(options);
+    await other.placeWorkspace(makeContext("other"));
+    expect(stages).toBe(1); expect(disposals).toBe(1);
+    other.stagingLeaseRelease?.();
+  });
+  it("does not release actual lease when stop callback rejects, including a synchronous throw", async () => {
+    const { site, stagingLocks } = makeSite({ stopBridges: () => { throw undefined; } });
+    await site.placeWorkspace(makeContext("occupied-stop"));
+    await site.startTransport(makeContext("occupied-stop"));
+    const error = await site.syncBack().catch(error => error);
+    expect(error).toBeInstanceOf(AcpxStagedRuntimeCleanupError);
+    expect(stagingLocks.has("occupied-stop")).toBe(true);
+    site.stagingLeaseRelease?.();
+    expect(stagingLocks.has("occupied-stop")).toBe(true);
+  });
+});
+
+
+describe("independent bridge rejection facts", () => {
+  it("retains both failed starts including undefined without exposing private reasons", async () => {
+    const secondary = new Error("private secondary bridge failure");
+    const { site } = makeSite({ startPaperclipBridge: async () => { throw undefined; },
+      startProcessSessionBridge: async () => { throw secondary; } });
+    await site.placeWorkspace(makeContext("both-starts"));
+    const error = await site.startTransport(makeContext("both-starts")).catch(error => error);
+    expect(error).toBeInstanceOf(AcpxBridgeStartupError);
+    expect(AcpxBridgeStartupError.inspect(error)).toEqual([undefined, secondary]);
+    expect(JSON.stringify(error)).not.toContain("private secondary");
+    site.stagingLeaseRelease?.();
+  });
+});
+
+
+describe("queued staging reservation cancellation", () => {
+  it.each([false, true])("withdraws only aborted waiter and preserves predecessor ordering (later waiter %s)", async queued => {
+    let stages = 0;
+    const first = makeSite({ stage: async () => { stages++; return makeStagedRuntime("cancel-stage-" + stages); } });
+    await first.site.placeWorkspace(makeContext("cancel-key"));
+    const original = first.stagingLocks.get("cancel-key");
+    const abort = new AbortController(), reason = new Error("fixture queued request canceled");
+    const waiter = createSandboxRunSite({ ...first.options, signal: abort.signal });
+    const pending = waiter.placeWorkspace(makeContext("cancel-key"));
+    void pending.catch(() => {});
+    const successor = queued ? createSandboxRunSite(first.options) : null;
+    let nextReturned = false;
+    const next = successor?.placeWorkspace(makeContext("cancel-key")).then(() => { nextReturned = true; });
+    abort.abort(reason);
+    const error = await pending.catch(error => error);
+    expect(error).toBeInstanceOf(AcpxStagingWaitAbortedError);
+    expect(AcpxStagingWaitAbortedError.inspect(error)).toBe(reason);
+    expect(JSON.stringify(error) + error.message).not.toContain(reason.message);
+    expect(stages).toBe(1); expect(nextReturned).toBe(false);
+    if (!queued) expect(first.stagingLocks.get("cancel-key")).toBe(original);
+    first.site.stagingLeaseRelease?.();
+    if (next) { await next; expect(stages).toBe(2); successor!.stagingLeaseRelease?.(); }
+    expect(first.stagingLocks.size).toBe(0);
+  });
+  it("does not shortcut actual admitted staging or release its owned resources on caller abort", async () => {
+    let finish!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; }), stageEntered = new Promise<void>(resolve => { entered = resolve; });
+    const abort = new AbortController();
+    const first = makeSite({ signal: abort.signal, stage: async () => { entered(); await gate; return makeStagedRuntime("admitted-before-abort"); } });
+    let returned = false;
+    const pending = first.site.placeWorkspace(makeContext("admitted-key")).then(() => { returned = true; });
+    await stageEntered; abort.abort();
+    await Promise.resolve(); await Promise.resolve();
+    expect(returned).toBe(false); expect(first.stagingLocks.size).toBe(1);
+    finish(); await pending;
+    expect(first.stagingLocks.size).toBe(1);
+    first.site.stagingLeaseRelease?.(); expect(first.stagingLocks.size).toBe(0);
+  });
+});
+
+
+describe("canceled reservation terminal queue bookkeeping", () => {
+  it("prunes canceled B/C chain only after A actually releases", async () => {
+    const first = makeSite(); await first.site.placeWorkspace(makeContext("chain"));
+    const bAbort = new AbortController(), cAbort = new AbortController();
+    const b = createSandboxRunSite({ ...first.options, signal: bAbort.signal }).placeWorkspace(makeContext("chain"));
+    const c = createSandboxRunSite({ ...first.options, signal: cAbort.signal }).placeWorkspace(makeContext("chain"));
+    void b.catch(() => {}); void c.catch(() => {});
+    bAbort.abort(); cAbort.abort(); await Promise.allSettled([b, c]);
+    expect(first.stagingLocks.size).toBe(1);
+    first.site.stagingLeaseRelease?.();
+    await vi.waitFor(() => expect(first.stagingLocks.size).toBe(0));
+  });
+  it("prunes exact restored predecessor that was already released before the waiter canceled", async () => {
+    const first = makeSite(); await first.site.placeWorkspace(makeContext("released-before-cancel"));
+    const abort = new AbortController();
+    const waiter = createSandboxRunSite({ ...first.options, signal: abort.signal }).placeWorkspace(makeContext("released-before-cancel"));
+    void waiter.catch(() => {});
+    first.site.stagingLeaseRelease?.(); abort.abort();
+    await expect(waiter).rejects.toBeInstanceOf(AcpxStagingWaitAbortedError);
+    await vi.waitFor(() => expect(first.stagingLocks.size).toBe(0));
+  });
+  it("normalizes a rejected predecessor without letting a second waiter bypass the first active gate", async () => {
+    const first = makeSite();
+    const rejected = Promise.reject(new Error("fixture prior queue rejection")); void rejected.catch(() => {});
+    first.stagingLocks.set("rejected-key", rejected);
+    await first.site.placeWorkspace(makeContext("rejected-key"));
+    let entered = false;
+    const next = createSandboxRunSite({ ...first.options, stage: async () => { entered = true; return makeStagedRuntime("after-rejected-prev"); } });
+    const pending = next.placeWorkspace(makeContext("rejected-key"));
+    await Promise.resolve(); await Promise.resolve();
+    expect(entered).toBe(false);
+    first.site.stagingLeaseRelease?.(); await pending;
+    expect(entered).toBe(true); next.stagingLeaseRelease?.();
+    expect(first.stagingLocks.size).toBe(0);
+  });
+  it("refuses preaborted and predecessor-settlement aborted callers before staging", async () => {
+    let stages = 0;
+    const abort = new AbortController(); abort.abort(new Error("private queued abort cause"));
+    const first = makeSite({ signal: abort.signal, stage: async () => { stages++; return makeStagedRuntime("unexpected"); } });
+    await expect(first.site.placeWorkspace(makeContext("preaborted"))).rejects.toBeInstanceOf(AcpxStagingWaitAbortedError);
+    expect(stages).toBe(0); expect(first.stagingLocks.size).toBe(0);
+    const later = new AbortController(); let release!: () => void;
+    const previous = new Promise<void>(resolve => { release = resolve; });
+    previous.then(() => { later.abort(); });
+    first.stagingLocks.set("settlement-abort", previous);
+    const site = createSandboxRunSite({ ...first.options, signal: later.signal });
+    const pending = site.placeWorkspace(makeContext("settlement-abort"));
+    release();
+    await expect(pending).rejects.toBeInstanceOf(AcpxStagingWaitAbortedError);
+    expect(stages).toBe(0);
+    await vi.waitFor(() => expect(first.stagingLocks.size).toBe(0));
+  });
+});
+
+
+describe("actual admitted startup callback holds staging ownership", () => {
+  it("pins the actual acquired lease and late RPC result after acknowledged-stop cancellation", async () => {
+    let complete!: (value: unknown) => void;
+    const rpc = new Promise<unknown>(resolve => { complete = resolve; }), execute = vi.fn(() => rpc);
+    const abort = new AbortController();
+    const startup = cancellableSandboxStartup({ signal: abort.signal, stopRemoteStartup: async () => {},
+      executionTarget: { kind: "remote", transport: "sandbox", providerKey: "fixture", runner: { execute } } } as never);
+    const runner = (startup.context.executionTarget as { runner: { execute: () => Promise<unknown> } }).runner;
+    let stages = 0;
+    const first = makeSite({ signal: abort.signal, stage: async () => { stages++; await runner.execute(); return makeStagedRuntime("never-returned-stage"); } });
+    const pending = first.site.placeWorkspace(makeContext("admitted-held"));
+    void pending.catch(() => {});
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce()); abort.abort();
+    const error = await pending.catch(error => error);
+    expect(error).toBeInstanceOf(AcpxStagedRuntimeCleanupError);
+    const release = first.site.stagingLeaseRelease!;
+    expect(release).toBeTypeOf("function");
+    expect(inspectStagingLeaseRetention(release)).toBe(error);
+    release(); expect(first.stagingLocks.size).toBe(1);
+    const resources = AcpxStagedRuntimeCleanupError.inspect(error)!.resources as { startupError: AcpxStartupCancellationError; release: unknown };
+    expect(resources.release).toBe(release);
+    expect(AcpxStartupCancellationError.inspect(resources.startupError)?.operations[0]?.originalRpc).toBe(rpc);
+    const late = { stdout: "private late runtime identity" }; complete(late);
+    await vi.waitFor(() => expect(AcpxStartupCancellationError.inspect(resources.startupError)?.operations[0]?.outcome).toEqual({ status: "fulfilled", value: late }));
+    const successor = createSandboxRunSite({ ...first.options, signal: undefined });
+    void successor.placeWorkspace(makeContext("admitted-held")).catch(() => {});
+    await Promise.resolve(); await Promise.resolve();
+    expect(stages).toBe(1); expect(first.stagingLocks.size).toBe(1);
+    release(); expect(first.stagingLocks.size).toBe(1);
+    await expect(startup.finish()).rejects.toBe(resources.startupError);
+  });
+});
+
+
+describe("startup cancellation without submitted resource ownership", () => {
+  it("does not occupy a lease for a real helper cancellation with zero submitted RPCs", async () => {
+    const abort = new AbortController(); abort.abort();
+    const execute = vi.fn(async () => ({}));
+    const startup = cancellableSandboxStartup({ signal: abort.signal, stopRemoteStartup: async () => {},
+      executionTarget: { kind: "remote", transport: "sandbox", providerKey: "fixture", runner: { execute } } } as never);
+    const error = await startup.finish().catch(error => error);
+    expect(AcpxStartupCancellationError.inspect(error)?.operations).toEqual([]);
+    const f = makeSite({ stage: async () => { throw error; } });
+    await expect(f.site.placeWorkspace(makeContext("no-submitted-rpc"))).rejects.toBe(error);
+    expect(f.stagingLocks.size).toBe(0); expect(execute).not.toHaveBeenCalled();
+    expect(AcpxStartupCancellationError.inspect(error)?.recoveryLeases).toEqual([]);
+  });
+});
+
+
+describe("actual startup ownership before site callback cleanup", () => {
+  it.each(["seed", "reuse"] as const)("retains exact %s resources before ordinary callback failure cleanup", async (phase) => {
+    const abort = new AbortController(), callbackError = new Error("private callback failure");
+    const value = { stdout: "completed original startup RPC" };
+    const execute = vi.fn(async () => value);
+    const startup = cancellableSandboxStartup({ signal: abort.signal, stopRemoteStartup: async () => {},
+      executionTarget: { kind: "remote", transport: "sandbox", providerKey: "fixture", runner: { execute } } } as never);
+    await (startup.context.executionTarget as { runner: { execute: () => Promise<unknown> } }).runner.execute();
+    const runtime = makeStagedRuntime(`callback-${phase}`), dispose = vi.fn(async () => {});
+    const fail = () => { abort.abort(); throw callbackError; };
+    const f = makeSite({ startupRecovery: startup, stage: async () => runtime, disposeFreshStagedRuntime: dispose,
+      isCompatibleResume: phase === "reuse",
+      seedManagedHome: async stage => { await stage([]); return fail(); }, onReuseLog: async () => fail() });
+    if (phase === "reuse") f.stagedRuntimes.set("callback-held", { stagedRuntime: runtime, teardown: null,
+      dispose, envDelta: {}, lastUsedAt: 1000 });
+    const error = await f.site.placeWorkspace(makeContext("callback-held")).catch(error => error);
+    expect(error).toBeInstanceOf(AcpxStagedRuntimeCleanupError);
+    const facts = AcpxStagedRuntimeCleanupError.inspect(error)!;
+    expect(facts.orderedFailures[0]).toBe(callbackError); expect(facts.stagedRuntime).toBe(runtime);
+    const release = f.site.stagingLeaseRelease!;
+    expect(inspectStagingLeaseRetention(release)).toBe(error);
+    expect((facts.resources as { startupRecovery: unknown; release: unknown }).startupRecovery).toBe(startup);
+    expect((facts.resources as { release: unknown }).release).toBe(release);
+    expect(startup.inspect().recoveryLeases).toEqual([release]);
+    expect(startup.inspect().operations[0]?.outcome).toEqual({ status: "fulfilled", value });
+    expect(dispose).not.toHaveBeenCalled(); release(); expect(f.stagingLocks.size).toBe(1);
+    expect(JSON.stringify(error)).not.toContain("private callback failure");
+    await expect(startup.finish()).rejects.toBeInstanceOf(AcpxStartupCancellationError);
+  });
+  it("cleans ordinary failed seed with no submitted RPC without inventing occupancy", async () => {
+    const abort = new AbortController(), failure = new Error("ordinary seed failure"), dispose = vi.fn(async () => {});
+    const startup = cancellableSandboxStartup({ signal: abort.signal, stopRemoteStartup: async () => {},
+      executionTarget: { kind: "remote", transport: "sandbox", providerKey: "fixture", runner: { execute: vi.fn() } } } as never);
+    const f = makeSite({ startupRecovery: startup, disposeFreshStagedRuntime: dispose,
+      seedManagedHome: async stage => { await stage([]); abort.abort(); throw failure; } });
+    await expect(f.site.placeWorkspace(makeContext("no-rpc-callback"))).rejects.toBe(failure);
+    expect(dispose).toHaveBeenCalledOnce(); expect(f.stagingLocks.size).toBe(0);
+    expect(startup.inspect().recoveryLeases).toEqual([]);
+    await expect(startup.finish()).rejects.toBeInstanceOf(AcpxStartupCancellationError);
+  });
+  it("does not accept fabricated helper inspection as submitted resource authority", async () => {
+    const failure = new Error("ordinary failure"), dispose = vi.fn(async () => {}), inspect = vi.fn(() => ({
+      stopAttempt: Promise.resolve(), operations: [{ operation: Promise.resolve(), originalRpc: null }], recoveryLeases: [] }));
+    const f = makeSite({ startupRecovery: { inspect } as never, disposeFreshStagedRuntime: dispose,
+      seedManagedHome: async stage => { await stage([]); throw failure; } });
+    await expect(f.site.placeWorkspace(makeContext("forged-owner"))).rejects.toBe(failure);
+    expect(inspect).not.toHaveBeenCalled(); expect(dispose).toHaveBeenCalledOnce(); expect(f.stagingLocks.size).toBe(0);
   });
 });

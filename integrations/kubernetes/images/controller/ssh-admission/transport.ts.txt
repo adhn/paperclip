@@ -1,0 +1,53 @@
+// Internal host input only. Never parse this authority from adapter configuration.
+// The caller must durably journal this exact binding BEFORE building/launching SSH.
+export interface SshLaunchAuthorization {
+  fenceRoot: string;
+  binding: {
+    epoch: string;
+    companyId: string;
+    agentId: string;
+    runId: string;
+    attemptId: string;
+    environmentId: string;
+    leaseId: string;
+    invocationId: string;
+  };
+}
+
+function assertSshAdmissionEpoch(value: string): void {
+  if (typeof value !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value)) {
+    throw new Error("Invalid host-owned SSH admission identity");
+  }
+}
+
+function assertSshFenceRoot(value: string): void {
+  if (typeof value !== "string" || !path.posix.isAbsolute(value)
+    || path.posix.normalize(value) !== value || value === "/") {
+    throw new Error("Invalid host-owned SSH admission root");
+  }
+}
+
+function snapshotSshLaunchAuthorization(value: SshLaunchAuthorization): SshLaunchAuthorization {
+  const fields = ["epoch", "companyId", "agentId", "runId", "attemptId", "environmentId", "leaseId", "invocationId"] as const;
+  assertSshFenceRoot(value?.fenceRoot);
+  if (!value.binding || Object.keys(value.binding).length !== fields.length) {
+    throw new Error("Invalid host-owned SSH launch authorization");
+  }
+  for (const field of fields) assertSshAdmissionEpoch(value.binding[field]);
+  return { fenceRoot: value.fenceRoot, binding: { ...value.binding } };
+}
+
+export async function updateSshAdmissionEpoch(input: {
+  spec: SshRemoteExecutionSpec;
+  fenceRoot: string;
+  epoch: string;
+  previousEpoch?: string;
+}): Promise<void> {
+  assertSshFenceRoot(input.fenceRoot);
+  assertSshAdmissionEpoch(input.epoch);
+  if (input.previousEpoch !== undefined) assertSshAdmissionEpoch(input.previousEpoch);
+  const operation = input.previousEpoch === undefined ? "initialize" : "takeover";
+  const envelope = { epoch: input.epoch, ...(input.previousEpoch === undefined ? {} : { previousEpoch: input.previousEpoch }) };
+  await runSshCommand(input.spec, ["python3", "-I", "-c", shellQuote(ADMISSION_SSH_EPOCH),
+    shellQuote(input.fenceRoot), operation, shellQuote(JSON.stringify(envelope))].join(" "), { timeoutMs: 20_000 });
+}

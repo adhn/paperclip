@@ -115,13 +115,19 @@
       "acpx@0.13.1": "patches/acpx@0.13.1.patch",
       "@agentclientprotocol/claude-agent-acp@0.73.0": "patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch",
       "@agentclientprotocol/codex-acp@1.6.2": "patches/@agentclientprotocol__codex-acp@1.6.2.patch",
+      "chat@4.39.0": "patches/chat@4.39.0.patch",
+      "nice-grpc@2.1.17": "patches/nice-grpc@2.1.17.patch",
+      "discord.js@14.27.0": "patches/discord.js@14.27.0.patch",
       "@chat-adapter/telegram@4.39.0": "patches/@chat-adapter__telegram@4.39.0.patch",
       "@chat-adapter/teams@4.39.0": "patches/@chat-adapter__teams@4.39.0.patch",
       "@chat-adapter/slack@4.39.0": "patches/@chat-adapter__slack@4.39.0.patch",
       "@chat-adapter/discord@4.39.0": "patches/@chat-adapter__discord@4.39.0.patch",
       "@chat-adapter/github@4.39.0": "patches/@chat-adapter__github@4.39.0.patch",
       "@discordjs/ws@1.2.3": "patches/@discordjs__ws@1.2.3.patch",
-      "postgres@3.4.9": "patches/postgres@3.4.9.patch"
+      "postgres@3.4.9": "patches/postgres@3.4.9.patch",
+      "@photon-ai/advanced-imessage@2.1.0": "patches/@photon-ai__advanced-imessage@2.1.0.patch",
+      "@azure/msal-node@5.6.0": "patches/@azure__msal-node@5.6.0.patch",
+      "@slack/web-api@7.19.0": "patches/@slack__web-api@7.19.0.patch"
     },
     "overrides": {
       "@agentclientprotocol/codex-acp@1.6.2>@openai/codex": "0.160.0",

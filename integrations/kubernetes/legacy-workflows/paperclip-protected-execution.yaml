@@ -1,0 +1,132 @@
+name: Paperclip disposable protected execution
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [paperclip-concurrency-admission]
+    paths:
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/**
+      # The image/PVC harness has its own exact-image workflow. Its source and
+      # contract changes do not alter the supervisor/provider fixture images.
+      - '!clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/image_pvc_clone.py'
+      - '!clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_image_pvc_clone.py'
+      - '!clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/IMAGE-PVC-REHEARSAL.md'
+      # Independent client/control code has a bounded contract-only workflow.
+      # It is not copied into either disposable image or installed by fixtures.
+      - '!clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/**'
+      - '!clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_production_contracts.py'
+      - '!clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_production_stream.py'
+      - '!clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_production_evidence.py'
+      - '!clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_operation_worker.py'
+      - '!clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_decision_history.py'
+      - '!clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_runtime_boundary.py'
+      - '!clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_write_authority.py'
+      - '!clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_decision_use.py'
+      - '!clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_runtime_owned.py'
+      - '!clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_owned_authority_calls.py'
+      - '!clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_retained_decision_store.py'
+      - '!clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_custody_service.py'
+      - '!clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/custody-test-requirements.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paperclip-protected-execution
+  cancel-in-progress: true
+
+jobs:
+  disposable-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PACKAGE: clusters/homelab/infrastructure/paperclip-evaluation/protected-execution
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Build disposable supervisor and synthetic provider without publication
+        run: |
+          docker build -f "$PACKAGE/Dockerfile.disposable" -t paperclip-protected-disposable "$PACKAGE"
+          docker build -f "$PACKAGE/Dockerfile.synthetic" -t paperclip-protected-synthetic "$PACKAGE"
+      - name: Verify bounded contracts with no network or privilege
+        run: |
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --user 2000:2000 --memory 256m --cpus 2 --pids-limit 64 \
+            --tmpfs /ledger:rw,noexec,nosuid,uid=2000,gid=2000,mode=700,size=32m \
+            -e TEST_ROOT=/ledger -e TMPDIR=/ledger --entrypoint python3 paperclip-protected-disposable \
+            -m unittest -v test_authority test_transfer test_durable_state test_kubernetes_boundary test_cri_stop_witness test_legacy_review
+      - name: Verify inactive review boundary renders without activation
+        run: |
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --user 2000:2000 --memory 128m --cpus 1 --pids-limit 64 \
+            --entrypoint python3 paperclip-protected-disposable \
+            -m unittest discover -s /app/kubernetes-review -p test_review.py
+      - name: Verify actual non-root supervisor and disposable provider isolation
+        run: python3 "$PACKAGE/test_disposable.py"
+      - name: Verify explicit Kubernetes HTTPS transport with loopback TLS
+        run: |
+          python3 "$PACKAGE/test_kubernetes_api.py"
+          python3 "$PACKAGE/test_kubernetes_fixture_stop.py"
+      - name: Refuse leaked fixture containers or volumes
+        if: always()
+        run: |
+          test -z "$(docker ps -aq --filter name=pc-protected-)"
+          test -z "$(docker volume ls -q --filter label=paperclip.fixture)"
+
+  kubernetes-disposable:
+    needs: disposable-only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PACKAGE: clusters/homelab/infrastructure/paperclip-evaluation/protected-execution
+      KIND_IMAGE: kindest/node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a
+      PYTHON_IMAGE: docker.io/library/python@sha256:8dca233de9f3d9bb410665f00a4da6dd06f331083137e0e98ccf227236fcc438
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Verify pinned disposable kind binary
+        run: |
+          curl -fL --retry 2 https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64 -o "$RUNNER_TEMP/kind"
+          echo "517ab7fc89ddeed5fa65abf71530d90648d9638ef0c4cde22c2c11f8097b8889  $RUNNER_TEMP/kind" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/kind"
+          python3 -c 'import yaml'
+      - name: Create isolated API fixture and import immutable synthetic image
+        run: |
+          docker pull "$PYTHON_IMAGE"
+          docker tag "$PYTHON_IMAGE" python:3.11-slim-bookworm
+          python3 "$PACKAGE/kind_launch_fixture.py" --kind "$RUNNER_TEMP/kind" --directory "$RUNNER_TEMP/protected-kind"
+          docker update --memory 3g --memory-swap 4g --cpus 2 --pids-limit 1024 pc-protected-disposable-control-plane
+      - name: Verify actual admission RBAC and independent exact runtime termination
+        run: python3 "$PACKAGE/test_kubernetes_disposable.py" "$RUNNER_TEMP/protected-kind/kubeconfig" "$RUNNER_TEMP/protected-kind/apiserver-client.crt"
+      - name: Verify CREATE consumption survives later validation failure and lost allow response
+        run: |
+          python3 "$PACKAGE/test_kubernetes_failure_disposable.py" "$RUNNER_TEMP/protected-kind/kubeconfig" "$RUNNER_TEMP/protected-kind/apiserver-client.crt"
+          python3 "$PACKAGE/test_kubernetes_failure_disposable.py" "$RUNNER_TEMP/protected-kind/kubeconfig" "$RUNNER_TEMP/protected-kind/apiserver-client.crt" drop
+      - name: Verify scoped bearer HTTPS Pod and PVC transport
+        run: |
+          python3 "$PACKAGE/test_kubernetes_api_disposable.py" \
+            --kubeconfig "$RUNNER_TEMP/protected-kind/kubeconfig" \
+            --apiserver-certificate "$RUNNER_TEMP/protected-kind/apiserver-client.crt" \
+            --result "$RUNNER_TEMP/protected-api-adapter.json"
+      - name: Remove API fixture before packet tests
+        if: always()
+        run: |
+          "$RUNNER_TEMP/kind" delete cluster --name pc-protected-disposable --kubeconfig "$RUNNER_TEMP/protected-kind/kubeconfig"
+      - name: Verify packet enforcement with separately pinned disposable CNI
+        run: |
+          curl -fL --retry 2 https://raw.githubusercontent.com/projectcalico/calico/v3.33.0/manifests/calico.yaml -o "$RUNNER_TEMP/calico.yaml"
+          python3 "$PACKAGE/kubernetes-review/network_fixture_runner.py" --kind "$RUNNER_TEMP/kind" --source "$RUNNER_TEMP/calico.yaml" --evidence "$RUNNER_TEMP/protected-network" --python-image "$PYTHON_IMAGE"
+      - name: Remove exact disposable network fixture after interruption
+        if: always()
+        run: |
+          "$RUNNER_TEMP/kind" delete cluster --name pc-protected-network-disposable --kubeconfig "$RUNNER_TEMP/protected-network/kubeconfig"
+          test -z "$(docker ps -aq --filter label=io.x-k8s.kind.cluster)"
+      - name: Retain secret-free scoped API transport result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: protected-scoped-api-transport
+          path: ${{ runner.temp }}/protected-api-adapter.json
+          if-no-files-found: ignore

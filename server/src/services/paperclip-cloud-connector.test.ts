@@ -51,10 +51,24 @@ function config() {
       sealPrivateKey: rawPrivateKey(sealing.privateKey),
     } satisfies PaperclipCloudConnectorConfig,
     sealPublicKey: sealing.publicKey,
+    signingPrivateKey: signing.privateKey,
+    sealingPrivateKey: sealing.privateKey,
   };
 }
 
 describe("Paperclip Cloud connector", () => {
+  it("refuses redirect forwarding of signed requests and original token material", async () => {
+    const keys = config();
+    const failure = new TypeError("synthetic redirect refused");
+    const request = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(init?.redirect).toBe("error");
+      throw failure;
+    });
+    const connector = createPaperclipCloudConnector({ config: keys.config, request: request as typeof fetch });
+    await expect(connector.refresh({ subject, companyId, refreshToken: "synthetic-original-token" })).rejects.toMatchObject({ code: "CONNECTOR_UNAVAILABLE" });
+    expect(request).toHaveBeenCalledOnce();
+  });
+
   it("accepts a managed test identity and rejects other environments at its broker", () => {
     const identity = config().config;
     const env = {
@@ -432,7 +446,11 @@ describe("Paperclip Cloud connector", () => {
       slackManager: { appId: "AMANAGER", workspaceId: "TWORKSPACE", workspaceName: "Paperclip", userId: "UOWNER" } };
     const sealed = seal(credentials, keys.sealPublicKey, "initial", keys.config, "slack.manager");
     const connector = createPaperclipCloudConnector({ config: keys.config, request: vi.fn(async () => Response.json({ claimId: "claim", scopes: [...SLACK_MANAGER_SCOPES], sealed })) as typeof fetch });
-    await expect(connector.claim({ subject, companyId, profile: "slack.manager", claimId: "claim", redemptionId: "manager-state" })).resolves.toEqual(credentials);
+    const observeRaw = vi.fn(async (raw: { bodyBase64: string }) => {
+      expect(JSON.parse(Buffer.from(raw.bodyBase64, "base64").toString())).toEqual({ claimId: "claim", scopes: [...SLACK_MANAGER_SCOPES], sealed });
+    });
+    await expect(connector.claim({ subject, companyId, profile: "slack.manager", claimId: "claim", redemptionId: "manager-state" }, observeRaw)).resolves.toEqual(credentials);
+    expect(observeRaw).toHaveBeenCalledOnce();
     await expect(connector.claim({ subject: "another-user", companyId, profile: "slack.manager", claimId: "claim", redemptionId: "manager-state" })).rejects.toThrow();
   });
   it("opens an instance-sealed claim and verifies its user, company, and exact scopes", async () => {
@@ -704,5 +722,93 @@ describe("dedicated App gateway delivery", () => {
     const outer = seal({v:1,instanceId,environment:"staging",leaseId:"lease-a",events:[{id:"transport-a",provider:"github",event:"gateway_delivery",payload:{githubApp:{registrationId:"route-a",sealed:inner}},bindingIds:["github-app:route-a"]}]},keys.sealPublicKey,"events",keys.config,"github.code");
     const connector=createPaperclipCloudConnector({config:keys.config,request:vi.fn(async()=>Response.json({leaseId:"lease-a",sealed:outer})) as typeof fetch});
     await expect(connector.leaseEvents({subject,companyId})).rejects.toBeInstanceOf(PaperclipCloudConnectorError);
+  });
+});
+
+
+describe("connector original raw response custody boundary", () => {
+  for (const scenario of ["invalid-json", "rejected-status", "invalid-seal", "revoke-204"] as const) {
+    it(`awaits original bytes before ${scenario} handling`, async () => {
+      const keys = config();
+      const status = scenario === "rejected-status" ? 503 : scenario === "revoke-204" ? 204 : 200;
+      const body = scenario === "invalid-json" ? "{invalid-canary" : scenario === "invalid-seal" ? '{"sealed":{}}' : scenario === "rejected-status" ? '{"error":"secret-canary"}' : "";
+      const request = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(status === 204 ? null : body, { status, headers: { "x-fixture": "original" } }));
+      const connector = createPaperclipCloudConnector({ config: keys.config, request: request as typeof fetch });
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => { release = resolve; });
+      const observer = vi.fn(async (_raw: { status: number; headers: Record<string, string>; bodyBase64: string }) => { await pending; });
+      let settled = false;
+      const operation = scenario === "revoke-204"
+        ? connector.revoke({ subject, companyId, token: "token-canary" }, observer)
+        : connector.claim({ subject, companyId, profile: "slack.manager", claimId: "original", redemptionId: "stable" }, observer);
+      const outcome = operation.then((value) => { settled = true; return { value }; }, (error) => { settled = true; return { error }; });
+      try {
+        await vi.waitFor(() => expect(observer).toHaveBeenCalledOnce());
+        expect(settled).toBe(false);
+        expect(observer.mock.calls[0][0]).toEqual({ status, headers: expect.objectContaining({ "x-fixture": "original" }), bodyBase64: Buffer.from(body).toString("base64") });
+      } finally { release(); }
+      const result = await outcome;
+      if (scenario === "revoke-204") expect(result).toEqual({ value: undefined });
+      else expect(result).toHaveProperty("error");
+      expect(request).toHaveBeenCalledOnce();
+      const sent = JSON.parse(request.mock.calls[0][1]!.body as string);
+      expect(sent).not.toHaveProperty("observeRaw");
+    });
+  }
+  it("propagates original observer rejection before credential decoding without replay", async () => {
+    const keys = config();
+    const request = vi.fn(async () => Response.json({ sealed: {} }));
+    const connector = createPaperclipCloudConnector({ config: keys.config, request: request as typeof fetch });
+    const original = new Error("durable result publication unknown");
+    await expect(connector.refresh({ subject, companyId, refreshToken: "original" }, async () => { throw original; })).rejects.toBe(original);
+    expect(request).toHaveBeenCalledOnce();
+  });
+  it("refuses incomplete and oversized bodies without invoking a complete-result observer", async () => {
+    for (const oversized of [false, true]) {
+      const keys = config();
+      const original = new Error("response stream interrupted");
+      const body = new ReadableStream<Uint8Array>({ start(controller) { if (oversized) { controller.enqueue(new Uint8Array(1_048_577)); controller.close(); } else controller.error(original); } });
+      const request = vi.fn(async () => new Response(body));
+      const connector = createPaperclipCloudConnector({ config: keys.config, request: request as typeof fetch });
+      const observer = vi.fn();
+      const operation = connector.refresh({ subject, companyId, refreshToken: "original" }, observer);
+      if (oversized) await expect(operation).rejects.toMatchObject({ code: "CONNECTOR_BAD_RESPONSE" });
+      else await expect(operation).rejects.toBe(original);
+      expect(observer).not.toHaveBeenCalled(); expect(request).toHaveBeenCalledOnce();
+    }
+  });
+});
+
+describe("local hosted recovery authority snapshot", () => {
+  it("binds actual parsed keys/config and keeps requests coherent after caller config mutation", async () => {
+    const keys = config();
+    const original = { ...keys.config };
+    const request = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => Response.json({ active: true, status: "active" }));
+    const connector = createPaperclipCloudConnector({ config: keys.config, request: request as typeof fetch });
+    const descriptor = connector.recoveryAuthority;
+    expect(descriptor).toMatchObject({ schema: 1, kind: "hosted-sealed", baseUrl: original.baseUrl, instanceId: original.instanceId, environment: original.environment });
+    expect(Object.isFrozen(descriptor)).toBe(true);
+    if (descriptor.kind !== "hosted-sealed") throw new Error("unexpected local authority kind");
+    expect(descriptor.signingKeySha256).toBe(createHash("sha256").update(keys.signingPrivateKey.export({ type: "pkcs8", format: "der" })).digest("hex"));
+    expect(descriptor.sealingKeySha256).toBe(createHash("sha256").update(keys.sealingPrivateKey.export({ type: "pkcs8", format: "der" })).digest("hex"));
+    expect(JSON.stringify(descriptor)).not.toContain(original.signPrivateKey);
+    expect(JSON.stringify(descriptor)).not.toContain(original.sealPrivateKey);
+    Object.assign(keys.config, { baseUrl: "https://changed.fixture.invalid", instanceId: "changed", environment: "production" });
+    keys.config.signPrivateKey = "changed-invalid-key"; keys.config.sealPrivateKey = "changed-invalid-key";
+    await connector.getInstanceStatus();
+    expect(String(request.mock.calls[0][0])).toContain(original.baseUrl);
+    const signed = JSON.parse(String(request.mock.calls[0][1]!.body)).request;
+    const payload = JSON.parse(Buffer.from(signed.split(".")[1], "base64url").toString());
+    expect(payload).toMatchObject({ iss: original.instanceId, env: original.environment });
+    expect(connector.recoveryAuthority).toBe(descriptor);
+  });
+  it("distinguishes local URL, instance, environment and each actual key identity", () => {
+    const keys = config(), other = config();
+    const baseline = createPaperclipCloudConnector({ config: keys.config }).recoveryAuthority;
+    for (const change of [ { baseUrl: "https://other.fixture.invalid" }, { instanceId: "other-instance" }, { environment: "production" as const },
+      { signPrivateKey: other.config.signPrivateKey }, { sealPrivateKey: other.config.sealPrivateKey } ]) {
+      expect(createPaperclipCloudConnector({ config: { ...keys.config, ...change } }).recoveryAuthority).not.toEqual(baseline);
+    }
+    expect(createPaperclipCloudConnector({ config: { ...keys.config } }).recoveryAuthority).toEqual(baseline);
   });
 });

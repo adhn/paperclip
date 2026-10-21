@@ -1,0 +1,50 @@
+--- a/dist/WebClient.js
++++ b/dist/WebClient.js
+@@ -82,6 +82,20 @@
+ const chat_stream_1 = require("./chat-stream");
+ const errors_1 = require("./errors");
+ const file_upload_1 = require("./file-upload");
++
++// All upload siblings are admitted together. A failed sibling must not release
++// the owning caller while other admitted HTTP requests remain outstanding.
++async function joinUploadTasks(factories) {
++    const failures = [];
++    const tasks = factories.map((factory) => Promise.resolve().then(factory).catch((error) => {
++        failures.push(error);
++        throw error;
++    }));
++    const outcomes = await Promise.allSettled(tasks);
++    if (failures.length === 1) throw failures[0];
++    if (failures.length > 1) throw new AggregateError(failures, 'Admitted Slack upload tasks failed');
++    return outcomes.map((outcome) => outcome.value);
++}
+ const helpers_1 = __importDefault(require("./helpers"));
+ const instrument_1 = require("./instrument");
+ const logger_1 = require("./logger");
+@@ -378,7 +392,7 @@
+      * @param fileUploads
+      */
+     async fetchAllUploadURLExternal(fileUploads) {
+-        return Promise.all(fileUploads.map((upload) => {
++        return joinUploadTasks(fileUploads.map((upload) => () => {
+             const options = {
+                 filename: upload.filename,
+                 length: upload.length,
+@@ -398,7 +412,7 @@
+      */
+     async completeFileUploads(fileUploads) {
+         const toComplete = Object.values((0, file_upload_1.getAllFileUploadsToComplete)(fileUploads));
+-        return Promise.all(toComplete.map((job) => this.files.completeUploadExternal(job)));
++        return joinUploadTasks(toComplete.map((job) => () => this.files.completeUploadExternal(job)));
+     }
+     /**
+      * for each returned file upload URL, upload corresponding file
+@@ -406,7 +420,7 @@
+      * @returns
+      */
+     async postFileUploadsToExternalURL(fileUploads, options) {
+-        return Promise.all(fileUploads.map(async (upload) => {
++        return joinUploadTasks(fileUploads.map((upload) => async () => {
+             const { upload_url, file_id, filename, data } = upload;
+             // either file or content will be defined
+             const body = data;

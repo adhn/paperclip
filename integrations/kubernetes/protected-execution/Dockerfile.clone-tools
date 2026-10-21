@@ -1,0 +1,11 @@
+ARG TEST_BASE=paperclip-admission-transport-test
+FROM postgres:18-bookworm@sha256:afc7e2d441324c0388fa80c3d24f733b4194a4eb7f47dd8ee2b08eb1a24a647c AS tools
+FROM ${TEST_BASE}
+COPY --from=tools /usr/lib/postgresql/18/bin/pg_dump /usr/local/bin/pg_dump
+COPY --from=tools /usr/lib/postgresql/18/bin/pg_restore /usr/local/bin/pg_restore
+COPY --from=tools /usr/lib/x86_64-linux-gnu/libpq.so.5* /opt/pg18/lib/
+COPY --from=tools /usr/lib/x86_64-linux-gnu/libldap* /usr/lib/x86_64-linux-gnu/liblber* /usr/lib/x86_64-linux-gnu/libsasl2* /opt/pg18/lib/
+ENV LD_LIBRARY_PATH=/opt/pg18/lib
+RUN pg_dump --version && pg_restore --version
+
+ENV PAPERCLIP_CLONE_PG_DUMP=/usr/local/bin/pg_dump PAPERCLIP_CLONE_PG_RESTORE=/usr/local/bin/pg_restore

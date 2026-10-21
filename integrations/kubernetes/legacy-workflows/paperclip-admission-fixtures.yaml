@@ -1,0 +1,157 @@
+name: Paperclip admission foundation checks
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [paperclip-concurrency-admission]
+    paths:
+      - clusters/homelab/infrastructure/paperclip-evaluation/fixtures/admission/**
+      - clusters/homelab/infrastructure/paperclip-evaluation/images/controller/ssh-admission/**
+      - clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/**
+      - clusters/homelab/infrastructure/paperclip-evaluation/images/controller/ssh-cancellation/**
+      - clusters/homelab/infrastructure/paperclip-evaluation/scripts/patch-ssh-admission.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/scripts/patch-native-admission.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/scripts/test-native-admission.sh
+      - clusters/homelab/infrastructure/paperclip-evaluation/scripts/test-ssh-capacity-lifetime.mjs
+      - clusters/homelab/infrastructure/paperclip-evaluation/scripts/test-ssh-admission.mjs
+      - clusters/homelab/infrastructure/paperclip-evaluation/scripts/test-controller-ssh-cancellation.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/Dockerfile.clone-tools
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/Dockerfile.launch-native-fixture
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/launch_native_fixture.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/kind_launch_fixture.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_kubernetes_disposable.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/admission_webhook.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/launch_consumption.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/kubernetes_boundary.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/authority.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_kubernetes_boundary.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_launch_native_fixture.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/cri_stop_witness.py
+      - .github/workflows/paperclip-admission-fixtures.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paperclip-admission-fixtures
+  # Keep the current assembled failure experiment and its diagnostics; only the
+  # newest pending revision is needed after it finishes.
+  cancel-in-progress: false
+
+jobs:
+  fixtures:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PACKAGE: clusters/homelab/infrastructure/paperclip-evaluation
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Test remote launch fencing without a provider
+        run: |
+          python3 "$PACKAGE/fixtures/admission/test-remote-fence.py"
+          python3 "$PACKAGE/fixtures/admission/test-supervisor-fence.py"
+          python3 "$PACKAGE/scripts/test-ssh-cancellation.py"
+      - name: Reconstruct pinned source and check attested files
+        run: |
+          python3 "$PACKAGE/scripts/prepare-controller.py" "$RUNNER_TEMP/controller"
+          python3 - "$PACKAGE/fixtures/admission/source-attestation.json" "$RUNNER_TEMP/controller" <<'PY'
+          import hashlib, json, pathlib, sys
+          evidence=json.loads(pathlib.Path(sys.argv[1]).read_text())
+          for path, digest in evidence['liveSourceSha256'].items():
+              assert hashlib.sha256((pathlib.Path(sys.argv[2])/path).read_bytes()).hexdigest() == digest, path
+          print('All nine reconstructed source files match recorded live hashes')
+          PY
+      - name: Build fixture dependencies with the existing frozen lock
+        # Build only dependencies, then overlay candidate source in a test-only
+        # image. No Rust runner, UI/server production build or image publication.
+        run: docker buildx build --load --platform linux/amd64 --target deps -f "$RUNNER_TEMP/controller/Dockerfile.evaluation" -t paperclip-controller-test "$RUNNER_TEMP/controller"
+      - name: Test database contention and failure holds with network disabled
+        run: |
+          docker run --rm --network none \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/$PACKAGE/fixtures/admission,dst=/fixture,readonly" \
+            --entrypoint sh paperclip-controller-test /fixture/test.sh
+      - name: Apply explicit candidate transport overlay after baseline attestation
+        run: python3 "$PACKAGE/scripts/patch-ssh-admission.py" "$RUNNER_TEMP/controller"
+      - name: Apply explicit candidate native schema and service overlay
+        run: python3 "$PACKAGE/scripts/patch-native-admission.py" "$RUNNER_TEMP/controller"
+      - name: Build test-only source image and provider-free restricted SSH fixture
+        run: |
+          docker buildx build --load -f "$PACKAGE/images/controller/ssh-admission/Dockerfile.test" -t paperclip-admission-transport-test "$RUNNER_TEMP/controller"
+          docker buildx build --load -f "$PACKAGE/images/controller/ssh-admission/Dockerfile.runner-test" -t paperclip-admission-runner-test "$PACKAGE/images/runner"
+      - name: Typecheck candidate transport and run focused existing regressions
+        run: |
+          docker run --rm --network none --entrypoint sh paperclip-admission-transport-test -c 'cd /app/packages/adapter-utils && ./node_modules/.bin/tsc --noEmit && cd /app && ./node_modules/.bin/vitest run packages/adapter-utils/src/ssh-command-managed.test.ts packages/adapter-utils/src/server-utils.test.ts packages/adapter-utils/src/server-utils-env.test.ts packages/adapter-utils/src/provider-stopped-boundary.test.ts packages/adapter-utils/src/sandbox-callback-bridge.test.ts packages/adapter-utils/src/workspace-restore-merge.test.ts packages/adapter-utils/src/workspace-restore-result.test.ts packages/adapter-utils/src/workspace-restore-teardown.test.ts packages/adapters/codex-local/src/server/codex-auth-merge.test.ts packages/adapters/codex-local/src/server/codex-auth-merge-decision.test.ts'
+      - name: Full candidate server typecheck on CI capacity
+        # TypeScript 7 execs a native Go compiler: NODE_OPTIONS has no effect.
+        # Use a 1 GiB Go soft limit, frequent GC and one compiler CPU after the
+        # prior configurations hit the 6 GiB cgroup cap. TypeScript 7 has
+        # independent parallel checkers: use its supported --singleThreaded mode. Do not
+        # run this full graph in the laptop's 3 GiB test budget.
+        run: |
+          docker run --rm --network none --memory 6g --memory-swap 7g --cpus 2 --pids-limit 256 \
+            --entrypoint sh paperclip-admission-transport-test -c 'cd /app/server; GOMEMLIMIT=1GiB GOGC=10 GOMAXPROCS=1 ./node_modules/.bin/tsc --noEmit --singleThreaded; rc=$?; for metric in memory.peak memory.events; do echo "$metric"; cat "/sys/fs/cgroup/$metric"; done; exit "$rc"'
+      - name: Add pinned PostgreSQL client tools for disposable Paperclip-only clone rehearsal
+        run: docker build -f "$PACKAGE/protected-execution/Dockerfile.clone-tools" --build-arg TEST_BASE=paperclip-admission-transport-test -t paperclip-admission-clone-tools "$PACKAGE/protected-execution"
+      - name: Test candidate native transactions and migration with network disabled
+        run: |
+          docker run --rm --user 0:0 --network none --memory 3g --memory-swap 5g --cpus 2 --pids-limit 256 \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/$PACKAGE/scripts/test-native-admission.sh,dst=/test-native-admission.sh,readonly" \
+            --entrypoint sh paperclip-admission-clone-tools /test-native-admission.sh
+      - name: Verify actual SSH fence and existing descendant cancellation
+        run: |
+          python3 "$PACKAGE/scripts/test-controller-ssh-cancellation.py" paperclip-admission-transport-test paperclip-admission-runner-test "$PACKAGE/scripts/test-ssh-admission.mjs"
+          python3 "$PACKAGE/scripts/test-controller-ssh-cancellation.py" paperclip-admission-transport-test paperclip-admission-runner-test
+          python3 "$PACKAGE/scripts/test-controller-ssh-cancellation.py" paperclip-admission-transport-test paperclip-admission-runner-test "$PACKAGE/scripts/test-ssh-capacity-lifetime.mjs"
+      - name: Prepare serialized hosted-only native Kubernetes CREATE fixture
+        run: |
+          python3 "$PACKAGE/protected-execution/test_launch_native_fixture.py"
+          curl -fL --retry 2 https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64 -o "$RUNNER_TEMP/kind"
+          echo "517ab7fc89ddeed5fa65abf71530d90648d9638ef0c4cde22c2c11f8097b8889  $RUNNER_TEMP/kind" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/kind"
+          docker build -f "$PACKAGE/protected-execution/Dockerfile.launch-native-fixture" -t paperclip-native-launch-fixture:disposable "$PACKAGE/protected-execution"
+          # The ordinary server tsconfig excludes __tests__; explicitly check the
+          # executable fixture before creating kind. No full graph runs here.
+          printf '%s\n' '{"extends":"./tsconfig.json","include":["src/__tests__/fixtures/protected-launch-native-fixture.ts","src/types/express.d.ts"],"exclude":[]}' > "$RUNNER_TEMP/tsconfig.launch-fixture.json"
+          docker run --rm --network none --read-only --memory 3g --memory-swap 5g --cpus 2 --pids-limit 256 \
+            --mount "type=bind,src=$RUNNER_TEMP/tsconfig.launch-fixture.json,dst=/app/server/tsconfig.launch-fixture.json,readonly" \
+            --entrypoint sh paperclip-native-launch-fixture:disposable -c 'cd /app/server; GOMEMLIMIT=1GiB GOGC=10 GOMAXPROCS=1 ./node_modules/.bin/tsc --noEmit --singleThreaded -p tsconfig.launch-fixture.json'
+          docker pull docker.io/library/python@sha256:8dca233de9f3d9bb410665f00a4da6dd06f331083137e0e98ccf227236fcc438
+          docker tag docker.io/library/python@sha256:8dca233de9f3d9bb410665f00a4da6dd06f331083137e0e98ccf227236fcc438 python:3.11-slim-bookworm
+          python3 "$PACKAGE/protected-execution/kind_launch_fixture.py" --kind "$RUNNER_TEMP/kind" --directory "$RUNNER_TEMP/native-kind"
+      - name: Verify actual Kubernetes consumes native PostgreSQL commands once
+        # No other native/build/kind fixture overlaps this phase. The kind node
+        # (2 GiB / 4 GiB with swap / 1.5 CPU / 1024 PIDs) plus non-root native
+        # fixture (768 MiB / 1 GiB with swap / 0.5 CPU / 128 PIDs) share the
+        # hosted-only envelope. This is not the laptop's 256-PID test allowance.
+        run: |
+          set -eu
+          for mode in normal cancel storage drop database-loss validator; do
+            python3 "$PACKAGE/protected-execution/launch_native_fixture.py" \
+              --kubeconfig "$RUNNER_TEMP/native-kind/kubeconfig" \
+              --apiserver-certificate "$RUNNER_TEMP/native-kind/apiserver-client.crt" \
+              --native-image paperclip-native-launch-fixture:disposable \
+              --evidence "$RUNNER_TEMP/native-launch-$mode" --mode "$mode"
+          done
+      - name: Remove exact native Kubernetes fixture after interruption
+        if: always()
+        run: |
+          if test -x "$RUNNER_TEMP/kind"; then
+            "$RUNNER_TEMP/kind" delete cluster --name pc-protected-disposable --kubeconfig "$RUNNER_TEMP/native-kind/kubeconfig"
+          fi
+          if docker container inspect pc-native-launch-disposable >/dev/null 2>&1; then
+            docker stop --time 5 pc-native-launch-disposable
+          fi
+          test -z "$(docker ps -aq --filter name=pc-native-launch-disposable)"
+          test -z "$(docker ps -aq --filter label=io.x-k8s.kind.cluster=pc-protected-disposable)"
+      - name: Retain native CREATE results without kubeconfig or private keys
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-kubernetes-create-${{ github.run_id }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/native-launch-*/result.json
+            ${{ runner.temp }}/native-launch-*/native-tls/native-stderr.log

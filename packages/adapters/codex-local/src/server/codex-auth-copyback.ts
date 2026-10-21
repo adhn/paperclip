@@ -1,3 +1,4 @@
+import { withExecutionStateMutation } from "@paperclipai/adapter-utils/execution-state-journal";
 import { mkdir, open, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -102,7 +103,7 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
   await mkdir(hostDir, { recursive: true });
   const hostOutcome = await withDirectoryMergeLock(
     hostDir,
-    async () => {
+    async () => withExecutionStateMutation(async () => {
       // Stage on the same filesystem as the host target so both the predicate read
       // and the final rename stay device-local (rename across devices is not
       // atomic and would fail with EXDEV).
@@ -112,6 +113,7 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
       const handle = await open(stagedTempPath, "wx", 0o600);
       try {
         await handle.writeFile(sandboxAuthBytes);
+        await handle.sync();
         await handle.close();
 
         const decision = await decideCodexAuthMerge(stagedTempPath, hostAuthPath, {
@@ -120,6 +122,8 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
         if (decision === USE_SOURCE_EXIT) {
           // Atomic same-directory swap; rename preserves the temp's 0600 mode.
           await rename(stagedTempPath, hostAuthPath);
+          const directory = await open(hostDir, "r");
+          try { await directory.sync(); } finally { await directory.close(); }
           await log(
             "[paperclip] Codex auth copy-back: sandbox credential is strictly newer for the same subscription identity; installed to the host at mode 0600.",
           );
@@ -149,7 +153,7 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
         await handle.close().catch(() => undefined);
         await rm(stagedTempPath, { force: true }).catch(() => undefined);
       }
-    },
+    }),
     env,
   );
 

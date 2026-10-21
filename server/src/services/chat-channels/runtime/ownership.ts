@@ -68,6 +68,7 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
           },
           "could not release Discord Gateway ownership lease",
         );
+        throw error;
       });
   }
 
@@ -81,37 +82,36 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
       clearInterval(ownership.renewTimer);
       ownership.renewTimer = null;
     }
-    if (discordGatewayOwnerships.get(ownership.endpointId) === ownership) {
-      discordGatewayOwnerships.delete(ownership.endpointId);
-    }
-    ownership.stopPromise = (async () => {
-      if (
-        removeRuntime &&
-        ownership.context.endpointRuntime &&
-        runtime.get(ownership.endpointId) === ownership.context.endpointRuntime
-      ) {
+    const task = (async () => {
+      if (removeRuntime && ownership.context.endpointRuntime) {
+        const current = runtime.get(ownership.endpointId);
+        if (current && current !== ownership.context.endpointRuntime) {
+          throw new Error("Cannot retire a different endpoint runtime for an ownership lease");
+        }
+        // A prior failure moves the exact runtime to ChatRuntime's retiring
+        // registry. removeEndpoint retries that retained instance when get is null.
+        await runtime.removeEndpoint(ownership.endpointId);
         runtimeVersions.delete(ownership.endpointId);
-        await runtime.removeEndpoint(ownership.endpointId).catch((error) => {
-          logger.warn(
-            {
-              endpointId: ownership.endpointId,
-              error: redactError(error),
-            },
-            "could not stop Discord Gateway after ownership loss",
-          );
-        });
       }
-      // The listener is stopped before the lease is released. A standby can
-      // therefore acquire immediately without overlapping Gateway sessions.
       await releaseDiscordGatewayLeaseRow(ownership);
-    })();
-    discordGatewayStopTasks.add(ownership.stopPromise);
-    void ownership.stopPromise.finally(() => {
-      if (ownership.stopPromise) {
-        discordGatewayStopTasks.delete(ownership.stopPromise);
+      if (discordGatewayOwnerships.get(ownership.endpointId) === ownership) {
+        discordGatewayOwnerships.delete(ownership.endpointId);
       }
-    });
-    return ownership.stopPromise;
+    })();
+    ownership.stopPromise = task;
+    discordGatewayStopTasks.add(task);
+    void task.then(
+      () => discordGatewayStopTasks.delete(task),
+      (error) => {
+        discordGatewayStopTasks.delete(task);
+        // Retain the exact token/context, fenced from admission, for a later
+        // explicit retry. Failure is never permission for successor acquisition.
+        if (ownership.stopPromise === task) ownership.stopPromise = null;
+        logger.warn({ endpointId: ownership.endpointId, error: redactError(error) },
+          "could not retire Discord Gateway ownership; retaining cleanup identity");
+      },
+    );
+    return task;
   }
 
   async function renewDiscordGatewayOwnership(
@@ -242,7 +242,7 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
         // lost token. Fence it synchronously, but do not make that callback
         // await the Gateway task whose adapter notification may be waiting on
         // the callback itself. The tracked stop task is joined at shutdown.
-        void stopDiscordGatewayOwnership(ownership);
+        void stopDiscordGatewayOwnership(ownership).catch(() => undefined);
       })
       .catch((error) => {
         logger.warn(
@@ -252,7 +252,7 @@ export function createChatReceiverOwnership(db: Db, options: OwnershipOptions) {
           },
           "Discord Gateway ownership renewal failed; stopping the local listener",
         );
-        void stopDiscordGatewayOwnership(ownership);
+        void stopDiscordGatewayOwnership(ownership).catch(() => undefined);
       })
       .finally(() => {
         ownership.renewal = null;

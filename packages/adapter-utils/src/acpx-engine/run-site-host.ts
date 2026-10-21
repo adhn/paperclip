@@ -108,6 +108,9 @@ export function createHostRunSite(options: HostRunSiteOptions): HostRunSite {
     // The host lane arms a per-entry idle timer on every warm save, so an idle
     // runtime closes on its own without a later run.
     perEntryTimer: true,
+    // A supplied or legacy warm predecessor remains authoritative until its
+    // exact close acknowledges. Generic store defaults remain unchanged.
+    deleteAfterRelease: true,
     release: (entry) => options.closeWarmEntry(entry),
   });
 

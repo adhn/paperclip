@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { executionAdmissionService } from "../execution-admission.js";
+import { admissionAttempts, admissionEpochs, admissionScheduler, admissionScopes, issueComments, completionContracts, nativeRunResults, workAssessments, statusDecisions, issueThreadInteractions } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
@@ -127,15 +130,20 @@ if (!support.supported) console.warn(`Skipping queue module database tests: ${su
 describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: Db;
+  let other: Db;
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-queue-module");
     db = createDb(database.connectionString);
+    other = createDb(database.connectionString);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => {
+    await other?.$client.end();
     await db?.$client.end();
     await database?.cleanup();
   });
   beforeEach(async () => {
+    await db.execute(sql`truncate execution_protected_authority_requests, execution_protected_command_journals, execution_protected_authority_pins, execution_admission_legacy_decisions, execution_admission_bootstraps, execution_admission_legacy_holds, execution_admission_restorations, execution_admission_commands, execution_admission_runner_epochs, execution_admission_attempts, execution_admission_projects,
+      execution_admission_scopes, execution_admission_scheduler, execution_admission_epochs`);
     await db.execute(sql`truncate table companies restart identity cascade`);
   });
 
@@ -184,4 +192,245 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.treeControlSvc.getActivePauseHoldGate).not.toHaveBeenCalled();
     expect(deps.executeRun).not.toHaveBeenCalled();
   });
+  async function admissionFixture(mode: "ordinary" | "comment" | "automation" | "review" = "ordinary") {
+    const seeded = await fixture("queued");
+    const epoch = randomUUID();
+    await db.insert(admissionEpochs).values({ epoch });
+    await db.insert(admissionScheduler).values({ epoch, pendingLimit: 20, draining: false,
+      evaluationExemptionUntil: new Date(Date.now() + 60_000) });
+    await db.insert(admissionScopes).values({ key: "runner:test", capacity: 1 });
+    const [comment] = await db.insert(issueComments).values({ companyId: seeded.company.id,
+      issueId: seeded.issue.id, authorUserId: "board-user", body: "queued input" }).returning();
+    const [run] = await db.update(heartbeatRuns).set({ issueId: seeded.issue.id, scopeKind: "issue",
+      invocationSource: mode === "automation" ? "automation" : "on_demand",
+      contextSnapshot: { issueId: seeded.issue.id, ...(mode === "comment" ? { wakeCommentIds: [comment.id] } : {}) },
+    }).where(eq(heartbeatRuns.id, seeded.run.id)).returning();
+    await db.update(agentWakeupRequests).set({ status: "queued", runId: run.id,
+      payload: mode === "comment" ? { _paperclipWakeContext: { wakeCommentIds: [comment.id] } } : null,
+    }).where(eq(agentWakeupRequests.id, seeded.wake.id));
+    if (mode === "review") {
+      const companyId = seeded.company.id, issueId = seeded.issue.id;
+      const [worker] = await db.insert(agents).values({ companyId, name: "source worker", status: "idle", adapterType: "process" }).returning();
+      const [contract] = await db.insert(completionContracts).values({ companyId, issueId, revision: 1,
+        schemaVersion: "paperclip.completion-contract.v1", policyVersion: "fixture", risk: "low",
+        completionAuthority: "agent", incompleteCriteriaPolicy: "block", createdByActorType: "user", createdByActorId: "board-user",
+        contractJson: {}, canonicalSha256: randomUUID() }).returning();
+      const [source] = await db.insert(heartbeatRuns).values({ companyId, agentId: worker.id,
+        nativeIssueId: issueId, status: "succeeded", runtimeMode: "native",
+        completionContractId: contract.id, completionContractSha256: contract.canonicalSha256 }).returning();
+      const [result] = await db.insert(nativeRunResults).values({ companyId, issueId, runId: source.id,
+        completionContractId: contract.id, serverFingerprint: randomUUID(), schemaStatus: "accepted", resultJson: {}, canonicalSha256: randomUUID() }).returning();
+      const [assessment] = await db.insert(workAssessments).values({ companyId, issueId, runId: source.id,
+        contractId: contract.id, resultId: result.id, triggerKind: "native_result", triggerActorCompanyId: companyId,
+        priorIssueStatus: "in_progress", priorStatusVersion: 0, policyVersion: "fixture", assessmentJson: {}, inputDigest: randomUUID() }).returning();
+      const [reviewIssue] = await db.update(issues).set({ status: "in_review", assigneeAgentId: worker.id,
+        executionRunId: null }).where(eq(issues.id, issueId)).returning();
+      const [decision] = await db.insert(statusDecisions).values({ companyId, issueId, runId: source.id,
+        assessmentId: assessment.id, decisionVersion: 1, policyVersion: "fixture", fromStatus: "in_progress", toStatus: "in_review",
+        reasonCode: "explicit_review", decisionJson: { projectedStatusVersion: reviewIssue.statusVersion },
+        decisionDigest: randomUUID(), applicationState: "applied" }).returning();
+      const [interaction] = await db.insert(issueThreadInteractions).values({ companyId, issueId,
+        kind: "request_confirmation", sourceRunId: source.id, addresseeAgentId: seeded.agent.id,
+        payload: { version: 1, prompt: "Review", target: { type: "custom", key: "native_completion_review", revisionId: decision.id } } }).returning();
+      await db.update(issues).set({ lastStatusDecisionId: decision.id }).where(eq(issues.id, issueId));
+      const [reviewRun] = await db.update(heartbeatRuns).set({ contextSnapshot: { issueId,
+        wakeReason: "native_completion_review", nativeReviewInteractionId: interaction.id, nativeReviewDecisionId: decision.id },
+      }).where(eq(heartbeatRuns.id, run.id)).returning();
+      Object.assign(run, reviewRun);
+    }
+    const service = executionAdmissionService(db, epoch);
+    const attempt = await service.registerRun({ companyId: run.companyId, runId: run.id, scopes: ["runner:test"] });
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(seeded.agent);
+    deps.resolveResponsibleUserIdForRun = vi.fn(async () => "board-user");
+    deps.options = { executionAdmission: service } as typeof deps.options;
+    const queue = createHeartbeatQueue(db, deps);
+    return { ...seeded, run, comment, service, attempt, deps, queue, epoch };
+  }
+  async function readClaim(f: Awaited<ReturnType<typeof admissionFixture>>) {
+    return {
+      run: (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0],
+      wake: (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id)))[0],
+      issue: (await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0],
+      attempt: (await db.select().from(admissionAttempts).where(eq(admissionAttempts.id, f.attempt.id)))[0],
+    };
+  }
+  it.each(["ordinary", "comment", "automation", "review"] as const)("atomically claims the actual %s branch and publishes after reservation commit", async mode => {
+    const f = await admissionFixture(mode);
+    let observed: Awaited<ReturnType<typeof readClaim>> | undefined;
+    f.deps.publishRunLifecyclePluginEvent.mockImplementation(() => {
+      // Schedule a root-client read at the publication boundary, outside the
+      // claim transaction. The returned promise is awaited below.
+      observation = readClaim(f).then(value => { observed = value; });
+    });
+    let observation: Promise<void> | undefined;
+    expect((await f.queue.claimQueuedRun(f.run))?.id).toBe(f.run.id);
+    await observation;
+    expect(observed?.run.status).toBe("running");
+    expect(observed?.wake.status).toBe("claimed");
+    expect(observed?.issue.executionRunId).toBe(f.run.id);
+    expect(observed?.attempt).toMatchObject({ state: "reserved", ownerEpoch: f.epoch, grantOrder: 1n });
+    expect(f.deps.executeRun).not.toHaveBeenCalled();
+  });
+  it.each(["ordinary", "comment", "automation", "review"] as const)("leaves the actual %s branch queued when capacity is zero", async mode => {
+    const f = await admissionFixture(mode);
+    await db.update(admissionScopes).set({ capacity: 0 });
+    expect(await f.queue.claimQueuedRun(f.run)).toBeNull();
+    const state = await readClaim(f);
+    expect(state.run.status).toBe("queued");
+    expect(state.wake.status).toBe("queued");
+    expect(state.attempt).toMatchObject({ state: "queued", token: null, waitReason: "capacity:runner:test" });
+    expect(f.deps.publishRunLifecyclePluginEvent).not.toHaveBeenCalled();
+  });
+  it("commits discarded-comment cancellation without granting capacity or advancing fairness", async () => {
+    const f = await admissionFixture("comment");
+    await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, f.comment.id));
+    expect(await f.queue.claimQueuedRun(f.run)).toBeNull();
+    const state = await readClaim(f);
+    expect(state.run).toMatchObject({ status: "cancelled", errorCode: "queued_comment_discarded" });
+    expect(state.wake.status).toBe("cancelled");
+    expect(state.issue.executionRunId).toBeNull();
+    expect(state.attempt).toMatchObject({ state: "cancelled", token: null, grantOrder: null });
+    expect((await db.select().from(admissionScheduler))[0].sequence).toBe(0n);
+    expect(f.deps.publishRunLifecyclePluginEvent).toHaveBeenCalledOnce();
+  });
+  it("rolls back run/wake/issue writes when reservation commit fails", async () => {
+    const f = await admissionFixture("comment");
+    await db.execute(sql`alter table execution_admission_attempts add constraint injected_grant_failure check (state <> 'reserved')`);
+    try {
+      await expect(f.queue.claimQueuedRun(f.run)).rejects.toThrow();
+      const state = await readClaim(f);
+      expect(state.run.status).toBe("queued");
+      expect(state.wake.status).toBe("queued");
+      expect(state.attempt).toMatchObject({ state: "queued", token: null });
+      expect((await db.select().from(admissionScheduler))[0].sequence).toBe(0n);
+      expect(f.deps.publishRunLifecyclePluginEvent).not.toHaveBeenCalled();
+      expect(f.deps.appendRunEvent).not.toHaveBeenCalled();
+    } finally { await db.execute(sql`alter table execution_admission_attempts drop constraint injected_grant_failure`); }
+  });
+  it("preserves native cancellation that wins before the claim", async () => {
+    const f = await admissionFixture();
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.update(agentWakeupRequests).set({ status: "cancelled" }).where(eq(agentWakeupRequests.id, f.wake.id));
+    expect(await f.queue.claimQueuedRun(f.run)).toBeNull();
+    const state = await readClaim(f);
+    expect(state.run.status).toBe("cancelled");
+    expect(state.wake.status).toBe("cancelled");
+    expect(state.attempt.state).toBe("cancelled");
+    expect(f.deps.publishRunLifecyclePluginEvent).not.toHaveBeenCalled();
+  });
+  it("defers rather than claiming a cancelled wake under a stale queued run", async () => {
+    const f = await admissionFixture();
+    await db.update(agentWakeupRequests).set({ status: "cancelled" }).where(eq(agentWakeupRequests.id, f.wake.id));
+    expect(await f.queue.claimQueuedRun(f.run)).toBeNull();
+    const state = await readClaim(f);
+    expect(state.run.status).toBe("queued");
+    expect(state.wake.status).toBe("cancelled");
+    expect(state.attempt.state).toBe("queued");
+  });
+  it("rechecks a pause committed during preflight before claiming", async () => {
+    const f = await admissionFixture();
+    f.deps.resolveResponsibleUserIdForRun = vi.fn(async () => {
+      await db.update(agents).set({ status: "paused", updatedAt: new Date(Date.now() + 1000) }).where(eq(agents.id, f.agent.id));
+      return "board-user";
+    });
+    expect(await createHeartbeatQueue(db, f.deps).claimQueuedRun(f.run)).toBeNull();
+    expect((await readClaim(f)).attempt.state).toBe("queued");
+    expect((await readClaim(f)).run.status).toBe("queued");
+  });
+  it("fails closed without a registered trusted scope set", async () => {
+    const f = await admissionFixture();
+    await db.delete(admissionAttempts).where(eq(admissionAttempts.id, f.attempt.id));
+    expect(await f.queue.claimQueuedRun(f.run)).toBeNull();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0].status).toBe("queued");
+    expect(f.deps.publishRunLifecyclePluginEvent).not.toHaveBeenCalled();
+  });
+
+  it("claims through the native scheduler entry point before dispatch", async () => {
+    const f = await admissionFixture();
+    expect((await f.queue.startNextQueuedRunForAgent(f.agent.id)).map(r => r.id)).toEqual([f.run.id]);
+    expect(f.deps.executeRun).toHaveBeenCalledExactlyOnceWith(f.run.id);
+    expect((await readClaim(f)).attempt.state).toBe("reserved");
+  });
+  it("serializes competing actual native claims across independent database clients", async () => {
+    const f = await admissionFixture("comment");
+    const rivalDeps = callbacks(other);
+    rivalDeps.getAgent.mockResolvedValue(f.agent);
+    rivalDeps.resolveResponsibleUserIdForRun = vi.fn(async () => "board-user");
+    rivalDeps.options = { executionAdmission: executionAdmissionService(other, f.epoch) };
+    const rival = createHeartbeatQueue(other, rivalDeps);
+    const results = await Promise.all([f.queue.claimQueuedRun(f.run), rival.claimQueuedRun(f.run)]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect((await readClaim(f)).attempt).toMatchObject({ state: "reserved", grantOrder: 1n });
+    expect(f.deps.publishRunLifecyclePluginEvent.mock.calls.length + rivalDeps.publishRunLifecyclePluginEvent.mock.calls.length).toBe(1);
+  });
+  it("honors native cancellation committed while waiting for the scheduler lock", async () => {
+    const f = await admissionFixture();
+    let release!: () => void, locked!: () => void, prepared!: () => void;
+    const unlock = new Promise<void>(resolve => { release = resolve; });
+    const schedulerLocked = new Promise<void>(resolve => { locked = resolve; });
+    const preflightDone = new Promise<void>(resolve => { prepared = resolve; });
+    const blocker = other.transaction(async tx => {
+      await tx.select().from(admissionScheduler).for("update");
+      locked();
+      await unlock;
+    });
+    await schedulerLocked;
+    f.deps.resolveResponsibleUserIdForRun = vi.fn(async () => { prepared(); return "board-user"; });
+    const claim = createHeartbeatQueue(db, f.deps).claimQueuedRun(f.run);
+    try {
+      await preflightDone;
+      await db.transaction(async tx => {
+        await tx.select().from(issues).where(eq(issues.id, f.issue.id)).for("update");
+        await tx.update(agentWakeupRequests).set({ status: "cancelled" }).where(eq(agentWakeupRequests.id, f.wake.id));
+        await tx.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.run.id));
+      });
+    } finally { release(); await blocker; }
+    expect(await claim).toBeNull();
+    expect((await readClaim(f)).attempt).toMatchObject({ state: "cancelled", token: null });
+    expect(f.deps.publishRunLifecyclePluginEvent).not.toHaveBeenCalled();
+  });
+  it("preserves native review eligibility rather than granting a stale review", async () => {
+    const f = await admissionFixture("review");
+    await db.update(issues).set({ lastStatusDecisionId: null }).where(eq(issues.id, f.issue.id));
+    expect(await f.queue.claimQueuedRun(f.run)).toBeNull();
+    expect((await readClaim(f)).attempt.state).toBe("queued");
+    expect((await readClaim(f)).run).toMatchObject({ status: "cancelled", errorCode: "issue_assignee_changed" });
+    expect((await readClaim(f)).attempt.token).toBeNull();
+  });
+
+  it("defers without a grant when a native issue lock is contended", async () => {
+    const f = await admissionFixture();
+    let release!: () => void, locked!: () => void;
+    const unlock = new Promise<void>(resolve => { release = resolve; });
+    const issueLocked = new Promise<void>(resolve => { locked = resolve; });
+    let blocker: Promise<unknown> | undefined;
+    f.deps.resolveResponsibleUserIdForRun = vi.fn(async () => {
+      // The existing staleness preflight takes the issue lock itself. Introduce
+      // contention after that check, at the reservation/claim boundary.
+      blocker = other.transaction(async tx => {
+        await tx.select().from(issues).where(eq(issues.id, f.issue.id)).for("update");
+        locked();
+        await unlock;
+      });
+      await issueLocked;
+      return "board-user";
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const claim = createHeartbeatQueue(db, f.deps).claimQueuedRun(f.run);
+    try {
+      expect(await Promise.race([claim, new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("claim waited on native issue lock")), 5000);
+      })])).toBeNull();
+    } finally {
+      if (timer) clearTimeout(timer);
+      release();
+      await blocker;
+      await claim;
+    }
+    expect((await readClaim(f)).attempt).toMatchObject({ state: "queued", token: null });
+    expect((await readClaim(f)).run.status).toBe("queued");
+    expect(f.deps.publishRunLifecyclePluginEvent).not.toHaveBeenCalled();
+  });
+
 });

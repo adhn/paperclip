@@ -1,3 +1,4 @@
+import { withExecutionStateMutation } from "@paperclipai/adapter-utils/execution-state-journal";
 import { open, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -50,7 +51,7 @@ export async function writeCredentialSeedOrNewer(
   const destinationDir = path.dirname(input.destinationPath);
   return withDirectoryMergeLock(
     destinationDir,
-    async () => {
+    async () => withExecutionStateMutation(async () => {
       const stagedTempPath = path.join(
         destinationDir,
         `.${input.tempPrefix}-${process.pid}-${randomUUID()}.tmp`,
@@ -60,6 +61,7 @@ export async function writeCredentialSeedOrNewer(
       const handle = await open(stagedTempPath, "wx", 0o600);
       try {
         await handle.writeFile(input.sourceBytes);
+        await handle.sync();
         await handle.close();
         const decision = await decideCodexAuthMerge(stagedTempPath, input.destinationPath, {
           seedIfDestAbsent: input.seedIfDestAbsent,
@@ -67,6 +69,8 @@ export async function writeCredentialSeedOrNewer(
         });
         if (decision === USE_SOURCE_EXIT) {
           await rename(stagedTempPath, input.destinationPath);
+          const directory = await open(destinationDir, "r");
+          try { await directory.sync(); } finally { await directory.close(); }
           await input.log(input.writtenLine);
           return "written";
         }
@@ -76,7 +80,7 @@ export async function writeCredentialSeedOrNewer(
         await handle.close().catch(() => undefined);
         await rm(stagedTempPath, { force: true }).catch(() => undefined);
       }
-    },
+    }),
     input.env,
   );
 }

@@ -1,3 +1,7 @@
+import { withQuotaCredentialSettlement } from "./quota-credential-recovery.js";
+import type { AiCredentialUseContext } from "./ai-credential-use-context.js";
+import { readQuotaOwnerIdentity } from "./quota-owner-identity.js";
+import { readSecretRecoveryIdentity } from "./secret-recovery-identity.js";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
@@ -40,7 +44,8 @@ import {
 } from "@paperclipai/shared";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { aiConnectionConfigurationFailure, aiConnectionCredentialNotSharedFailure } from "./ai-connection-configuration-failure.js";
-import { quotaCredentialRecovery, quotaCredentialHash } from "./quota-credential-recovery.js";
+import { quotaCredentialRecovery, quotaCredentialHash, isQuotaExchangeIntent, isQuotaExchangeResult, type QuotaCredentialRecoveryEntry } from "./quota-credential-recovery.js";
+import { exchangeQuotaCredential } from "./quota-credential-exchange.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
@@ -241,7 +246,7 @@ export function aiConnectionService(db: Db) {
     if (!supportsAiConnectionUsage(metadata.data.provider, metadata.data.method)) {
       return { ...identity, ...await probeAiConnectionUsage(metadata.data, "") };
     }
-    const value = await credential(row);
+    const value = await runtimeCredential(row, { kind: "user", userId });
     return { ...identity, ...await probeAiConnectionUsage(metadata.data, value) };
   }
   async function select(input: {
@@ -577,6 +582,12 @@ export function aiConnectionService(db: Db) {
     const grantId = reconnect?.grant.id ?? randomUUID();
     const persist = () => withAccountHomeSecretMutationLock(undefined, companyId, () => db.transaction(async (tx) => {
       const secrets = secretService(tx);
+      if (reconnect) {
+        const pending = await quotaCredentialRecovery(companyId, grantId).read();
+        if (pending && (isQuotaExchangeIntent(pending) || isQuotaExchangeResult(pending))) {
+          throw unprocessable("AI credential exchange recovery requires inspection.", { code: "ai_connection_busy" });
+        }
+      }
       if (sessionId) {
         const [session] = await tx
           .select()
@@ -895,20 +906,40 @@ export function aiConnectionService(db: Db) {
     }
   }
   async function recoverQuotaCredentialInTransaction(
-    tx: Db, row: Parameters<typeof credential>[0], current: string, onRecoveryStarted?: () => void,
+    tx: Db, row: Parameters<typeof credential>[0], current: string, onRecoveryStarted?: (entry: QuotaCredentialRecoveryEntry) => void,
   ) {
-    const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
-    if (!metadata.success || metadata.data.provider !== "openai" || metadata.data.method !== "subscription") return null;
     const recovery = quotaCredentialRecovery(row.connection.companyId, row.grant.id);
     const pending = await recovery.read();
     if (!pending) return null;
+    const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
+    if (!metadata.success || metadata.data.provider !== "openai" || metadata.data.method !== "subscription") {
+      if (isQuotaExchangeIntent(pending) || isQuotaExchangeResult(pending)) {
+        throw unprocessable("AI credential exchange recovery requires inspection.", { code: "ai_connection_busy" });
+      }
+      return null;
+    }
+    if (isQuotaExchangeIntent(pending)) {
+      throw unprocessable("AI credential exchange recovery requires inspection.", { code: "ai_connection_busy" });
+    }
     const ref = row.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential");
-    if (!ref || pending.secretId !== ref.secretId || pending.connectionId !== row.connection.id || pending.baseHash !== quotaCredentialHash(current)) {
+    const exactSecret = ref && pending.secretId === ref.secretId && pending.connectionId === row.connection.id;
+    if (isQuotaExchangeResult(pending) && ref && exactSecret) {
+      const identity = await readSecretRecoveryIdentity(tx, row.connection.companyId, ref.secretId);
+      const owner = await readQuotaOwnerIdentity(tx, row.connection.companyId, row.grant.id);
+      if (!isDeepStrictEqual(identity, pending.intent.originalSecretIdentity) || !isDeepStrictEqual(owner, pending.intent.originalOwnerIdentity)) {
+        // Matching token bytes cannot identify an independently committed write.
+        throw unprocessable("AI credential exchange recovery requires inspection.", { code: "ai_connection_busy" });
+      }
+    }
+    if (!exactSecret || pending.baseHash !== quotaCredentialHash(current)) {
+      if (isQuotaExchangeResult(pending)) {
+        throw unprocessable("AI credential exchange recovery requires inspection.", { code: "ai_connection_busy" });
+      }
       await recovery.clear();
       return null;
     }
-    onRecoveryStarted?.();
-    await secretService(tx).rotate(ref.secretId, { value: pending.value, preserveAiSessionEpoch: true }, { userId: row.grant.subjectUserId });
+    onRecoveryStarted?.(pending);
+    await withQuotaCredentialSettlement(pending, await readSecretRecoveryIdentity(tx, row.connection.companyId, ref.secretId), current, () => secretService(tx).rotate(ref.secretId, { value: pending.value, preserveAiSessionEpoch: true }, { userId: row.grant.subjectUserId }));
     // Automatic rotation changes secret revision, not the grant mutation marker
     // used to fence reconnect attempts. Ownership and access are unchanged.
     await logActivity(tx, { companyId: row.connection.companyId, actorType: "system", actorId: "quota_recovery",
@@ -917,39 +948,93 @@ export function aiConnectionService(db: Db) {
     return pending.value;
   }
 
+  async function currentCredentialOwner(tx: Db, original: Parameters<typeof credential>[0], retained?: QuotaCredentialRecoveryEntry | null) {
+    const companyId = original.connection.companyId;
+    const [grant] = await tx.select().from(connectionGrants).where(and(
+      eq(connectionGrants.id, original.grant.id), eq(connectionGrants.companyId, companyId),
+      eq(connectionGrants.connectionId, original.connection.id),
+    )).for("update", { noWait: true });
+    const [connection] = await tx.select().from(toolConnections).where(and(
+      eq(toolConnections.id, original.connection.id), eq(toolConnections.companyId, companyId),
+    )).for("update", { noWait: true });
+    const expected = aiConnectionMetadataSchema.safeParse(original.connection.config.ai);
+    const actual = aiConnectionMetadataSchema.safeParse(connection?.config.ai);
+    if (!grant || grant.status !== "active" || grant.kind !== original.grant.kind ||
+        grant.subjectUserId !== original.grant.subjectUserId || !connection || connection.connectionPurpose !== "ai" ||
+        connection.status !== "active" || !connection.enabled || connection.healthStatus !== "ok" ||
+        !expected.success || !actual.success || !isDeepStrictEqual(expected.data, actual.data)) {
+      if (retained && isQuotaExchangeResult(retained)) throw unprocessable("AI credential exchange recovery requires inspection.", { code: "ai_connection_busy" });
+      throw new Error("credentials_unavailable");
+    }
+    if (retained && isQuotaExchangeResult(retained)) {
+      const owner = await readQuotaOwnerIdentity(tx, companyId, grant.id);
+      if (!isDeepStrictEqual(owner, retained.intent.originalOwnerIdentity)) throw unprocessable("AI credential exchange recovery requires inspection.", { code: "ai_connection_busy" });
+    }
+    return { connection, grant };
+  }
+
+  async function assertCredentialUse(tx: Db, row: Parameters<typeof credential>[0], context: AiCredentialUseContext) {
+    if (!context || typeof context !== "object") throw forbidden("Current AI credential use context is required");
+    const companyId = row.connection.companyId;
+    const service = aiConnectionService(tx);
+    if (context.kind === "agent") {
+      if (context.selection?.companyId !== companyId) throw forbidden("AI credential company mismatch");
+      const selected = await service.select(context.selection);
+      if (selected.connection.id !== row.connection.id || selected.grant.id !== row.grant.id) throw forbidden("The selected AI account changed. Retry this execution.");
+      return;
+    }
+    if (context.kind !== "user" || !context.userId || !await service.membership(companyId, context.userId)) throw forbidden("An active company member is required");
+    if (row.grant.kind === "user" && !await service.membership(companyId, row.grant.subjectUserId)) throw forbidden("The account owner is no longer an active company member");
+    const audience = await tx.select().from(connectionGrantMembers).where(and(eq(connectionGrantMembers.companyId, companyId), eq(connectionGrantMembers.grantId, row.grant.id)));
+    if (!canUseCredential(row.grant, context.userId, audience)) throw forbidden("This credential is not shared with the responsible user");
+  }
+  async function assertCurrentCredentialUse(row: Parameters<typeof credential>[0], context: AiCredentialUseContext) {
+    await db.transaction(async tx => {
+      const selected = await currentCredentialOwner(tx as unknown as Db, row);
+      await assertCredentialUse(tx as unknown as Db, selected, context);
+    });
+  }
   /** Never hand a consumed token to a new provider while its replacement awaits commit. */
-  async function runtimeCredential(row: Parameters<typeof credential>[0]) {
-    const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
-    if (!metadata.success || metadata.data.provider !== "openai" || metadata.data.method !== "subscription") return credential(row);
+  async function runtimeCredential(row: Parameters<typeof credential>[0], context: AiCredentialUseContext) {
     let savingReplacement = false;
+    let settlementCommitted = false;
+    let settlement: QuotaCredentialRecoveryEntry | undefined;
     return withAccountHomeSecretMutationLock(undefined, row.connection.companyId, async () => {
       let recovered = false;
       const value = await db.transaction(async tx => {
-        const [grant] = await tx.select().from(connectionGrants).where(and(
-          eq(connectionGrants.id, row.grant.id), eq(connectionGrants.companyId, row.connection.companyId),
-          eq(connectionGrants.connectionId, row.connection.id),
-        )).for("update", { noWait: true });
-        if (!grant || grant.status !== "active") throw new Error("credentials_unavailable");
+        const retained = await quotaCredentialRecovery(row.connection.companyId, row.grant.id).read();
+        if (retained && isQuotaExchangeIntent(retained)) throw unprocessable("AI credential exchange recovery requires inspection.", { code: "ai_connection_busy" });
+        const selected = await currentCredentialOwner(tx as unknown as Db, row, retained);
+        const { grant } = selected;
+        if (!retained || !isQuotaExchangeResult(retained)) await assertCredentialUse(tx as unknown as Db, selected, context);
+        if (aiConnectionMetadataSchema.parse(selected.connection.config.ai).routing?.auth === "none") {
+          if (retained && isQuotaExchangeResult(retained)) throw unprocessable("AI credential exchange recovery requires inspection.", { code: "ai_connection_busy" });
+          return aiConnectionService(tx as unknown as Db).credential(selected);
+        }
         const ref = grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential");
         if (!ref) throw new Error("credentials_unavailable");
         await tx.select({ id: companySecrets.id }).from(companySecrets).where(and(
           eq(companySecrets.id, ref.secretId), eq(companySecrets.companyId, row.connection.companyId),
         )).for("update", { noWait: true });
-        const selected = { connection: row.connection, grant };
         const current = await aiConnectionService(tx as unknown as Db).credential(selected);
-        const pending = await recoverQuotaCredentialInTransaction(tx as unknown as Db, selected, current, () => {
+        const pending = await recoverQuotaCredentialInTransaction(tx as unknown as Db, selected, current, (entry) => {
+          settlement = entry;
           savingReplacement = true;
         });
         recovered = pending !== null;
         return pending ?? current;
       });
-      if (recovered) await quotaCredentialRecovery(row.connection.companyId, row.grant.id).clear()
+      settlementCommitted = true;
+      if (recovered) await quotaCredentialRecovery(row.connection.companyId, row.grant.id).clear(settlement)
         .catch(error => logger.warn({ err: error, grantId: row.grant.id }, "Saved runtime credential recovery cleanup pending"));
+      // Historical result preservation committed independently. A current deny
+      // refuses release without rolling that original preservation back.
+      await assertCurrentCredentialUse(row, context);
       return value;
     }).catch(error => {
       // Once a matching replacement is found, a failed write or commit must
       // defer execution. Keep its journal so the next attempt can save it.
-      if (savingReplacement) {
+      if (savingReplacement && !settlementCommitted) {
         throw unprocessable("AI credentials are being updated. Retry shortly.", { code: "ai_connection_busy" });
       }
       // Drizzle wraps Postgres errors in `cause`. Contention is a temporary
@@ -976,6 +1061,7 @@ export function aiConnectionService(db: Db) {
   }) {
     return withAccountHomeSecretMutationLock(undefined, input.companyId, async () => {
       let recovered = false;
+      let settlement: QuotaCredentialRecoveryEntry | undefined;
       await db.transaction(async (tx) => {
         const { attribution } = input;
         const [grant] = await tx.select().from(connectionGrants).where(and(
@@ -1002,7 +1088,7 @@ export function aiConnectionService(db: Db) {
         if (attribution.identity !== `${grant.id}:${attribution.responsibleUserId ?? "shared"}:${generation}`) return;
         // A quota exchange may have consumed this run's token before a failed
         // database commit. Save its working replacement instead of revoking it.
-        recovered = await recoverQuotaCredentialInTransaction(tx as unknown as Db, { connection, grant }, value) !== null;
+        recovered = await recoverQuotaCredentialInTransaction(tx as unknown as Db, { connection, grant }, value, (entry) => { settlement = entry; }) !== null;
         if (recovered) return;
         await tx.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date() })
           .where(eq(connectionGrants.id, grant.id));
@@ -1015,38 +1101,56 @@ export function aiConnectionService(db: Db) {
           details: { provider: attribution.provider, grantId: grant.id },
         });
       });
-      if (recovered) await quotaCredentialRecovery(input.companyId, input.attribution.grantId).clear()
+      if (recovered) await quotaCredentialRecovery(input.companyId, input.attribution.grantId).clear(settlement)
         .catch(error => logger.warn({ err: error, grantId: input.attribution.grantId }, "Saved failed-run credential recovery cleanup pending"));
     });
   }
   /** Refresh only the selected vaulted identity, serializing rotation and reconnect. */
-  async function refreshQuotaCredential(row: Parameters<typeof credential>[0], failedValue: string, signal: AbortSignal) {
+  async function refreshQuotaCredential(row: Parameters<typeof credential>[0], failedValue: string, signal: AbortSignal, context: AiCredentialUseContext) {
     return withAccountHomeSecretMutationLock(undefined, row.connection.companyId, async () => {
       const recovery = quotaCredentialRecovery(row.connection.companyId, row.grant.id);
       let savingReplacement = false;
+      let settlement: QuotaCredentialRecoveryEntry | undefined;
       const save = () => db.transaction(async (tx) => {
         // Do not wait on a transaction that might itself be waiting for the file
         // lock. All database locks must be available before consuming OAuth tokens.
         const companyId = row.connection.companyId;
-        const [grant] = await tx.select().from(connectionGrants).where(and(
-          eq(connectionGrants.id, row.grant.id), eq(connectionGrants.companyId, companyId),
-          eq(connectionGrants.connectionId, row.connection.id),
-        )).for("update", { noWait: true });
-        if (!grant || grant.status !== "active") throw new Error("credentials_unavailable");
+        const retained = await recovery.read();
+        if (retained && isQuotaExchangeIntent(retained)) throw unprocessable("AI credential exchange recovery requires inspection.", { code: "ai_connection_busy" });
+        const selected = await currentCredentialOwner(tx as unknown as Db, row, retained);
+        const { grant } = selected;
         const ref = grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential");
         if (!ref) throw new Error("credentials_unavailable");
         await tx.select({ id: companySecrets.id }).from(companySecrets).where(and(
           eq(companySecrets.id, ref.secretId), eq(companySecrets.companyId, companyId),
         )).for("update", { noWait: true });
-        const current = await aiConnectionService(tx as unknown as Db).credential({ connection: row.connection, grant });
-        signal.throwIfAborted();
+        const current = await aiConnectionService(tx as unknown as Db).credential(selected);
         let pending = await recovery.read();
+        if (pending && isQuotaExchangeIntent(pending)) {
+          throw unprocessable("AI credential exchange recovery requires inspection.", { code: "ai_connection_busy" });
+        }
+        if (pending && isQuotaExchangeResult(pending) && pending.secretId === ref.secretId && pending.connectionId === row.connection.id) {
+          const identity = await readSecretRecoveryIdentity(tx as unknown as Db, companyId, ref.secretId);
+          const owner = await readQuotaOwnerIdentity(tx as unknown as Db, companyId, grant.id);
+          if (!isDeepStrictEqual(identity, pending.intent.originalSecretIdentity) || !isDeepStrictEqual(owner, pending.intent.originalOwnerIdentity)) {
+            throw unprocessable("AI credential exchange recovery requires inspection.", { code: "ai_connection_busy" });
+          }
+        }
         if (pending && (pending.secretId !== ref.secretId || pending.connectionId !== row.connection.id || pending.baseHash !== quotaCredentialHash(current))) {
+          if (isQuotaExchangeResult(pending)) {
+            throw unprocessable("AI credential exchange recovery requires inspection.", { code: "ai_connection_busy" });
+          }
           // Reconnect may reuse this grant. Once the current authorized token
           // itself expires, an older journal must not prevent refreshing it.
           await recovery.clear();
           pending = null;
         }
+        // Current deny applies to fresh use/exchange, not independently retained
+        // result preservation. Preserve first, authorize release after commit.
+        if (!pending || !isQuotaExchangeResult(pending)) await assertCredentialUse(tx as unknown as Db, selected, context);
+        // Dashboard cancellation prevents fresh provider work, while exact
+        // retained-result settlement must still survive a failed SQL attempt.
+        if (!pending) signal.throwIfAborted();
         // A delayed poll may have read A before B was saved and B's refresh
         // produced an uncommitted C. Recover C before returning or clearing its
         // journal; a newer database credential alone does not prove it is usable.
@@ -1060,56 +1164,47 @@ export function aiConnectionService(db: Db) {
             sql`${agents.runtimeConfig}->'aiConnection'->>'provider' = 'openai'`, eq(agents.adapterType, "codex_local")),
         )).limit(1);
         if (active && !pending) throw new Error("provider_unavailable");
+        settlement = pending ?? undefined;
         let refreshed = pending?.value;
         if (!refreshed) {
-          await recovery.prepare();
-          const auth = JSON.parse(current);
-          const refreshToken = auth.tokens?.refresh_token;
-          if (typeof refreshToken !== "string" || !refreshToken) throw new Error("authentication_required");
-          // Once exchange starts, its lifetime is independent of the dashboard's
-          // shorter deadline. A consumed single-use token must still be read/saved.
-          signal.throwIfAborted();
-          const refreshSignal = AbortSignal.timeout(60_000);
-          // Matches the Codex OAuth client (openai/codex, login/src/auth/manager.rs).
-          const response = await fetch("https://auth.openai.com/oauth/token", {
-            method: "POST", redirect: "error", signal: refreshSignal,
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ client_id: "app_EMoamEEZ73f0CkXaXp7hrann", grant_type: "refresh_token", refresh_token: refreshToken }),
-          });
-          if (!response.ok) {
-            await response.body?.cancel();
-            throw new Error(response.status === 400 || response.status === 401 ? "authentication_required" : "provider_unavailable");
+          const originalOwnerIdentity = await readQuotaOwnerIdentity(tx as unknown as Db, companyId, grant.id);
+          const config = originalOwnerIdentity.connection.config as Record<string, unknown> | null;
+          const metadata = aiConnectionMetadataSchema.safeParse(config?.ai);
+          if (!metadata.success || metadata.data.provider !== "openai" || metadata.data.method !== "subscription") {
+            throw new Error("credentials_unavailable");
           }
-          const tokens = await response.json() as Record<string, unknown>;
-          if (typeof tokens.access_token !== "string" || !tokens.access_token) throw new Error("provider_unavailable");
-          refreshed = JSON.stringify({ ...auth, tokens: { ...auth.tokens,
-            access_token: tokens.access_token,
-            ...(typeof tokens.refresh_token === "string" && tokens.refresh_token ? { refresh_token: tokens.refresh_token } : {}),
-            ...(typeof tokens.id_token === "string" && tokens.id_token ? { id_token: tokens.id_token } : {}),
-          }, last_refresh: new Date().toISOString() });
-          // This fsynced encrypted journal survives transaction rollback and host
-          // restart. Never exchange the consumed token again after a failed save.
-          await recovery.write({ companyId, grantId: grant.id, connectionId: row.connection.id,
-            secretId: ref.secretId, baseHash: quotaCredentialHash(current), value: refreshed });
+          const result = await exchangeQuotaCredential({
+            recovery, companyId, grantId: grant.id, connectionId: row.connection.id,
+            secretId: ref.secretId, current,
+            originalSecretIdentity: await readSecretRecoveryIdentity(tx as unknown as Db, companyId, ref.secretId), originalOwnerIdentity, signal,
+            beforeDispatch: async () => { await assertCredentialUse(tx as unknown as Db, selected, context); },
+          });
+          settlement = result;
+          refreshed = result.value;
         }
         savingReplacement = true;
         // Persist the rotated token even if the quota deadline expires after the
         // successful exchange; losing it would strand all subsequent executions.
-        await secretService(tx).rotate(ref.secretId, { value: refreshed, preserveAiSessionEpoch: true }, { userId: grant.subjectUserId });
+        if (!settlement) throw new Error("quota_credential_exchange_pending");
+        await withQuotaCredentialSettlement(settlement, await readSecretRecoveryIdentity(tx as unknown as Db, companyId, ref.secretId), current,
+          () => secretService(tx).rotate(ref.secretId, { value: refreshed!, preserveAiSessionEpoch: true }, { userId: grant.subjectUserId }));
         await logActivity(tx as unknown as Db, { companyId, actorType: "system", actorId: "quota",
           action: "ai_connection.credential_refreshed", entityType: "tool_connection", entityId: row.connection.id,
           details: { provider: "openai", grantId: grant.id } });
         return refreshed;
       });
       for (let attempt = 0; ; attempt++) {
+        let committed = false;
         try {
           const value = await save();
-          // Clear only after commit. A committed-but-lost response is detected
-          // by the current credential comparison on the next attempt.
-          await recovery.clear().catch((error) => logger.warn({ err: error, grantId: row.grant.id }, "Saved quota credential recovery cleanup pending"));
+          committed = true;
+          // Clear only after acknowledged commit. A lost reply retains the
+          // result for exact inspection; matching output bytes are no receipt.
+          await recovery.clear(settlement).catch((error) => logger.warn({ err: error, grantId: row.grant.id }, "Saved quota credential recovery cleanup pending"));
+          await assertCurrentCredentialUse(row, context);
           return value;
         } catch (error) {
-          if (!savingReplacement || attempt >= 2) throw error;
+          if (committed || !savingReplacement || attempt >= 2) throw error;
           // Saving retries have no provider side effect. Persistent failures
           // retain the journal for the next quota poll, including after restart.
         }

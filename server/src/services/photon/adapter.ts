@@ -103,10 +103,12 @@ export class PhotonChatAdapter implements Adapter<PhotonThread, PhotonMessage> {
   readonly botUserId: string;
   readonly client: GrpcAdvancedIMessage;
   private closed = false;
+  private disconnectTask?: Promise<void>;
   private recovery?: PhotonRecoveryTransport;
   private readonly typing = new Map<string, ReturnType<typeof setTimeout>>();
   typingGuard?: (activeThreadId?: string) => Promise<void>;
   recoveryStream(sequence?: number) {
+    if (this.closed) throw new Error("Photon runtime retired");
     this.recovery ??= new PhotonRecoveryTransport(this.authentication);
     return this.recovery.catchUp(sequence);
   }
@@ -127,6 +129,7 @@ export class PhotonChatAdapter implements Adapter<PhotonThread, PhotonMessage> {
         autoIdempotency: false,
         timeout: 25_000,
         channelOptions: {
+          "grpc.enable_retries": 0,
           "grpc.max_receive_message_length": MAX_ATTACHMENT_BYTES + 1024 * 1024,
         },
       });
@@ -134,14 +137,27 @@ export class PhotonChatAdapter implements Adapter<PhotonThread, PhotonMessage> {
   async initialize(_chat: ChatInstance): Promise<void> {
     await this.authentication.token();
   }
-  async disconnect(): Promise<void> {
+  disconnect(): Promise<void> {
+    if (this.disconnectTask) return this.disconnectTask;
     this.closed = true;
     for (const timer of this.typing.values()) clearTimeout(timer);
     this.typing.clear();
-    this.authentication.retire();
-    this.recovery?.close();
-    await this.client.close();
+    // Each independent owner must receive cleanup even if another fails. Keep
+    // the exact attempt: opaque SDK close methods may become no-ops after a
+    // rejected first call, which cannot establish recovery or lease retirement.
+    this.disconnectTask = (async () => {
+      const results = await Promise.allSettled([
+        Promise.resolve().then(() => this.authentication.retire()),
+        Promise.resolve().then(() => this.recovery?.close()),
+        Promise.resolve().then(() => this.client.close()),
+      ]);
+      const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Photon disconnect is incomplete");
+    })();
+    return this.disconnectTask;
   }
+
   encodeThreadId(value: PhotonThread): string {
     if (value.isGroup && this.authentication.identity.allocation === "shared")
       throw new PhotonError("rejected", "Photon shared channels support direct messages only");

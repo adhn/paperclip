@@ -1,0 +1,9 @@
+{
+  "name": "paperclip-runner-gemini",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@google/gemini-cli": "0.63.0",
+    "typescript": "5.9.3"
+  }
+}

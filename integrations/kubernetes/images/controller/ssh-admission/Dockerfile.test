@@ -1,0 +1,20 @@
+# Test-only image: dependency graph comes from the existing frozen deps target.
+ARG ADMISSION_TEST_BASE=paperclip-controller-test
+FROM ${ADMISSION_TEST_BASE}
+USER root
+RUN rm -f /etc/apt/sources.list.d/debian.sources \
+ && printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20261001T000000Z trixie main\n' > /etc/apt/sources.list \
+ && apt-get update && apt-get install -y --no-install-recommends openssh-client \
+ && rm -rf /var/lib/apt/lists/*
+COPY . /app
+WORKDIR /app
+# Assembled heartbeat imports compiled-only workspace exports. Build their
+# TypeScript surfaces explicitly; do not depend on a warm local image cache.
+# This remains a test image, not the full server/UI/Rust production build.
+RUN node scripts/ensure-plugin-build-deps.mjs \
+ && node node_modules/typescript/bin/tsc -p packages/paperclip-eval-kernel/tsconfig.json \
+ && node node_modules/typescript/bin/tsc -p packages/paperclip-runner/tsconfig.json \
+ && node node_modules/typescript/bin/tsc -p packages/paperclip-runner/tsconfig.surfaces.json
+
+# The standalone DB+SSH fixture runs with a read-only application filesystem.
+RUN node --import /app/server/node_modules/tsx/dist/loader.mjs --input-type=module -e 'import { prepareEmbeddedPostgresNativeRuntime } from "/app/packages/db/src/embedded-postgres-native.ts"; await prepareEmbeddedPostgresNativeRuntime();'

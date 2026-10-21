@@ -1,3 +1,4 @@
+import { guardCapacityResolvedExecutionConfig } from "../execution-capacity-context.js";
 import { eq, sql } from "drizzle-orm";
 import { heartbeatRuns, type Db, type agents, type projects } from "@paperclipai/db";
 import type { AiConnectionBinding } from "@paperclipai/shared";
@@ -138,6 +139,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       trustPreset,
     });
   onFailureSecretsResolved(() => collectRunFailureSecretValues(resolvedConfig.env, secretKeys));
+  await guardCapacityResolvedExecutionConfig(db, { companyId: agent.companyId, runId: run.id, configuration: resolvedConfig });
   if (aiBinding) {
     try {
       managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig });

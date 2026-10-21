@@ -1,0 +1,53 @@
+--- a/src/client/Client.js
++++ b/src/client/Client.js
+@@ -39,6 +39,7 @@
+  * @extends {BaseClient}
+  */
+ class Client extends BaseClient {
++  #paperclipDestroyTask;
+   /**
+    * @param {ClientOptions} options Options for the client
+    */
+@@ -229,7 +230,11 @@
+       await this.ws.connect();
+       return this.token;
+     } catch (error) {
+-      await this.destroy();
++      try {
++        await this.destroy();
++      } catch (cleanup) {
++        throw new AggregateError([error, cleanup], 'Discord login and cleanup failed');
++      }
+       throw error;
+     }
+   }
+@@ -247,13 +252,22 @@
+    * Logs out, terminates the connection to Discord, and destroys the client.
+    * @returns {Promise<void>}
+    */
+-  async destroy() {
+-    super.destroy();
+-
+-    this.sweepers.destroy();
+-    await this.ws.destroy();
+-    this.token = null;
+-    this.rest.setToken(null);
++  destroy() {
++    if (this.#paperclipDestroyTask) return this.#paperclipDestroyTask;
++    // A failed websocket destroy may set an opaque destroyed flag before its
++    // cleanup finishes. Retain the entire first attempt, including uncertainty.
++    this.#paperclipDestroyTask = (async () => {
++      const results = await Promise.allSettled([
++        Promise.resolve().then(() => super.destroy()),
++        Promise.resolve().then(() => this.sweepers.destroy()),
++        Promise.resolve().then(() => this.ws.destroy()),
++        Promise.resolve().then(() => { this.token = null; }),
++        Promise.resolve().then(() => this.rest.setToken(null)),
++      ]);
++      const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
++      if (failures.length) throw new AggregateError(failures, 'Discord client cleanup is incomplete');
++    })();
++    return this.#paperclipDestroyTask;
+   }
+ 
+   /**

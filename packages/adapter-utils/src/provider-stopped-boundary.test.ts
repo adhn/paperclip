@@ -73,3 +73,31 @@ describe("final invocation instruction collection fence", () => {
     expect(stopped).toHaveBeenCalledOnce();
   });
 });
+
+
+describe("verified SSH stop identity forwarding", () => {
+  const ssh = { kind: "remote", transport: "ssh", spec: { host: "fixture" }, remoteCwd: "/workspace" } as any;
+  it.each([0, 125, 255])("does not infer supervisor proof from SSH exit %s", async exitCode => {
+    vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({ ...result, exitCode });
+    const stopped = vi.fn();
+    await runAdapterExecutionTargetProcess("run", ssh, "provider", [], options(stopped));
+    expect(stopped).not.toHaveBeenCalled();
+  });
+  it("carries the exact verified invocation through the final invocation fence", async () => {
+    const proof = { sshInvocationId: "12345678-1234-1234-1234-123456789abc" };
+    vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({ ...result, exitCode: 125, remoteProcessStopped: true, ...proof });
+    const collect = vi.fn(async () => {});
+    const fence = createProviderStoppedBoundary(collect);
+    await runAdapterExecutionTargetProcess("run", ssh, "provider", [], options(fence.beginInvocation()));
+    await fence.collectBeforeRestore();
+    expect(collect).toHaveBeenCalledWith(proof);
+  });
+  it("does not reuse a previous invocation identity after an uncertain retry", async () => {
+    const collect = vi.fn(async () => {});
+    const fence = createProviderStoppedBoundary(collect);
+    const stale = fence.beginInvocation(); stale({ sshInvocationId: "old" });
+    fence.beginInvocation(); stale({ sshInvocationId: "old" });
+    await fence.collectBeforeRestore();
+    expect(collect).not.toHaveBeenCalled();
+  });
+});

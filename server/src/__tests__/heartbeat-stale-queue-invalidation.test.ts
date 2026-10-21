@@ -1777,7 +1777,13 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         originCommentIds: [wakeCommentId],
         interactionResolvedAt: new Date().toISOString(), mutation: "interaction", source: `${interactionKind}.resolved`, forceFreshSession: true } });
     await heartbeat.resumeQueuedRuns();
-    expect(await waitForCondition(async () => (await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status === "succeeded")).toBe(true);
+    // This exercises assembled workspace/continuation bookkeeping. Under a
+    // bounded shared CPU budget it can exceed the generic three-second poll;
+    // keep a finite completion deadline and report the actual failure state.
+    const succeeded = await waitForCondition(async () => (await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status === "succeeded", 10_000);
+    const observed = (await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, error: heartbeatRuns.error,
+      resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0];
+    expect(succeeded, JSON.stringify(observed)).toBe(true);
     // Terminal status precedes completion bookkeeping. Drain those writes before
     // afterEach truncates the fixture, otherwise PostgreSQL can deadlock.
     await heartbeat.waitForRunExecutionDrain(runId);

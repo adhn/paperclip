@@ -248,7 +248,7 @@ export interface AdapterExecutionContext {
   stopRemoteStartup?: () => Promise<void>;
   /** Host-owned collection after the final provider invocation is confirmed stopped,
    * before remote workspace restore or disposal. Never call on an unverified timeout. */
-  onProviderStopped?: () => Promise<void>;
+  onProviderStopped?: (proof?: { sshInvocationId: string }) => Promise<void>;
   /** Server-owned, actor-attributed snapshot also rendered by legacy wake prompts. */
   executionContinuation?: ExecutionContinuationEnvelope | null;
   runId: string;

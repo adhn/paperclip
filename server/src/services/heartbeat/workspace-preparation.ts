@@ -1,3 +1,4 @@
+import { guardCapacityExecution, guardCapacityWorkspaceConfiguration } from "../execution-capacity-context.js";
 import {
   resolveWorkspaceAfterLowTrustPreflight,
   WorkspaceValidationFailure,
@@ -117,6 +118,7 @@ export interface HeartbeatWorkspacePreparationInput {
   };
   config: {
     mergedConfig: Record<string, unknown>;
+    admissionSourceConfiguration?: Record<string, unknown>;
     configSnapshot: WorkspaceMetadataInput["configSnapshot"];
     secretManifest: WorkspaceMetadataInput["secretManifest"];
   };
@@ -148,6 +150,11 @@ function readNonEmptyString(value: unknown): string | null {
 
 export async function prepareHeartbeatWorkspace(db: Db, input: HeartbeatWorkspacePreparationInput) {
   const { run, agent, controllerLease, nativeRunnerPreparationSpans } = input;
+  await guardCapacityExecution(db, { companyId: run.companyId, runId: run.id,
+    environmentId: input.environment.selectedEnvironmentId, agent,
+    environment: input.environment.selectedEnvironmentForConfig ?? undefined });
+  await guardCapacityWorkspaceConfiguration(db, { companyId: run.companyId, runId: run.id,
+    configuration: input.config.admissionSourceConfiguration });
   const {
     issueRef,
     issueId,

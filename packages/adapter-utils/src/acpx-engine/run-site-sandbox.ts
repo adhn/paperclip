@@ -21,6 +21,7 @@
 // candidate never retain a run-scoped contribution or a bridge token. The staged
 // reuse payload carries the staged files only.
 
+import { AcpxStartupCancellationError, AcpxStartupCleanupError, associateStartupRecoveryLease, inspectActualStartupRecovery, associateActualStartupRecovery, type cancellableSandboxStartup } from "./startup-cancellation.js";
 import type {
   AdapterExecutionTarget,
   AdapterExecutionTargetPaperclipBridgeHandle,
@@ -42,6 +43,72 @@ import type {
 } from "./run-contracts.js";
 import { createSessionReuseStore } from "./session-reuse-store.js";
 import type { WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
+
+const stagingWaitAbortDetails = new WeakMap<AcpxStagingWaitAbortedError, unknown>();
+export class AcpxStagingWaitAbortedError extends Error {
+  constructor(original: unknown) {
+    super("ACP staging admission was canceled before resource acquisition.");
+    this.name = "AcpxStagingWaitAbortedError";
+    stagingWaitAbortDetails.set(this, original);
+  }
+  static inspect(error: AcpxStagingWaitAbortedError) { return stagingWaitAbortDetails.get(error); }
+}
+
+const retainedStagingLeases = new Set<() => void>();
+const stagingLeaseHolds = new WeakMap<() => void, { held: boolean; error?: unknown }>();
+export function registerStagingLease(release: () => void): void { stagingLeaseHolds.set(release, { held: false }); }
+export function retainStagingLease(release: (() => void) | null | undefined, error: unknown): void {
+  const state = release && stagingLeaseHolds.get(release);
+  if (state) { state.held = true; state.error = error; retainedStagingLeases.add(release!); }
+}
+export function inspectStagingLeaseRetention(release: () => void): unknown {
+  return stagingLeaseHolds.get(release)?.error;
+}
+export function stagingLeaseIsRetained(release: (() => void) | null | undefined): boolean {
+  return Boolean(release && stagingLeaseHolds.get(release)?.held);
+}
+
+const stagedCleanupDetails = new WeakMap<AcpxStagedRuntimeCleanupError, Readonly<{
+  orderedFailures: readonly unknown[];
+  stagedRuntime: PreparedAdapterExecutionTargetRuntime | null;
+  runtimeRootDir: string | null;
+  resources?: unknown;
+}>>();
+
+/** In-process inspection only; neither a durable receipt nor a stop proof. */
+export class AcpxStagedRuntimeCleanupError extends Error {
+  constructor(errors: readonly unknown[], stagedRuntime: PreparedAdapterExecutionTargetRuntime | null, resources?: unknown) {
+    super("ACP staged runtime cleanup requires recovery inspection.");
+    this.name = "AcpxStagedRuntimeCleanupError";
+    stagedCleanupDetails.set(this, Object.freeze({ orderedFailures: Object.freeze([...errors]),
+      stagedRuntime, runtimeRootDir: stagedRuntime?.runtimeRootDir ?? null, ...(resources === undefined ? {} : { resources }) }));
+  }
+  static inspect(error: AcpxStagedRuntimeCleanupError) { return stagedCleanupDetails.get(error); }
+}
+
+function retainActualStartupFailure(error: unknown, owner: unknown, release: (() => void) | null | undefined,
+  runtime: PreparedAdapterExecutionTargetRuntime | null): AcpxStagedRuntimeCleanupError | undefined {
+  const facts = inspectActualStartupRecovery(owner);
+  if (!release || !facts?.stopAttempt || !facts.operations.length) return undefined;
+  const previous = inspectStagingLeaseRetention(release);
+  if (previous === error && error instanceof AcpxStagedRuntimeCleanupError) return error;
+  const prior = previous instanceof AcpxStagedRuntimeCleanupError ? AcpxStagedRuntimeCleanupError.inspect(previous)!.orderedFailures : previous === undefined ? [] : [previous];
+  const failure = new AcpxStagedRuntimeCleanupError([...prior, error], runtime,
+    { originalCallbackError: error, startupRecovery: owner, operations: facts.operations, previous, release });
+  retainStagingLease(release, failure);
+  if (stagingLeaseIsRetained(release)) associateActualStartupRecovery(owner, release);
+  return failure;
+}
+
+const bridgeStartupDetails = new WeakMap<AcpxBridgeStartupError, readonly unknown[]>();
+export class AcpxBridgeStartupError extends Error {
+  constructor(errors: readonly unknown[]) {
+    super("ACP bridge startup failed. Exact inspection is required.");
+    this.name = "AcpxBridgeStartupError";
+    bridgeStartupDetails.set(this, Object.freeze([...errors]));
+  }
+  static inspect(error: AcpxBridgeStartupError) { return bridgeStartupDetails.get(error); }
+}
 
 /**
  * One staged in-sandbox runtime the store keeps for the next compatible resume.
@@ -92,6 +159,10 @@ export interface SandboxRunSiteOptions {
   readonly stagedRuntimes: Map<string, StagedRuntimeStoreEntry>;
   /** The per-key staging mutex the lease and the sweep share. */
   readonly stagingLocks: Map<string, Promise<unknown>>;
+  /** Cancellation may withdraw only a queued reservation before fn admission. */
+  readonly signal?: AbortSignal;
+  /** Actual executor-created helper; module-private identity is verified. */
+  readonly startupRecovery?: ReturnType<typeof cancellableSandboxStartup>;
   readonly now: () => number;
   /** The staged-idle bound, in milliseconds. `0` or less disables the sweep. */
   readonly idleMs: number;
@@ -199,12 +270,20 @@ export function createSandboxRunSite(options: SandboxRunSiteOptions): SandboxRun
     lastUsedAt: (entry) => entry.lastUsedAt,
     // The staged cache arms no per-entry timer; the run-start sweep is the only
     // eviction path, and it runs under the per-key staging lease.
+    deleteAfterRelease: true,
     release: async (entry) => {
-      if (entry.dispose) await entry.dispose().catch(() => {});
+      try { await entry.dispose?.(); }
+      catch (error) { throw new AcpxStagedRuntimeCleanupError([error], entry.stagedRuntime); }
     },
     withEvictLease: async (key, critical) => {
-      const lease = await withStagingLease(options.stagingLocks, key, critical);
-      lease.release();
+      if (options.stagingLocks.has(key)) return;
+      try {
+        const lease = await withStagingLease(options.stagingLocks, key, critical);
+        lease.release();
+      } catch (error) {
+        // The failed key remains occupied; its uncertainty does not block other keys.
+        if (!(error instanceof AcpxStagedRuntimeCleanupError)) throw error;
+      }
     },
   });
 
@@ -231,9 +310,11 @@ export function createSandboxRunSite(options: SandboxRunSiteOptions): SandboxRun
 
     async placeWorkspace(context: AcpRunContext): Promise<PlacedWorkspace> {
       const sessionKey = context.sessionKey;
+      const stageOwner: { runtime: PreparedAdapterExecutionTargetRuntime | null } = { runtime: null };
       const lease = await withStagingLease(options.stagingLocks, sessionKey, async (): Promise<StagedWorkspace> => {
         const cached = options.isCompatibleResume ? store.borrow(sessionKey) : undefined;
         if (cached) {
+          stageOwner.runtime = cached.stagedRuntime;
           // Reuse the already-staged in-sandbox workspace and managed home.
           // Re-apply the env keys the seam repointed and reuse the per-run
           // copy-back so the copy-back cadence stays exactly per run.
@@ -253,14 +334,16 @@ export function createSandboxRunSite(options: SandboxRunSiteOptions): SandboxRun
         // leaks it.
         const stale = options.stagedRuntimes.get(sessionKey);
         if (stale) {
-          options.stagedRuntimes.delete(sessionKey);
-          if (stale.dispose) await stale.dispose().catch(() => {});
+          try { await stale.dispose?.(); }
+          catch (error) { throw new AcpxStagedRuntimeCleanupError([error], stale.stagedRuntime); }
+          if (options.stagedRuntimes.get(sessionKey) === stale) options.stagedRuntimes.delete(sessionKey);
         }
         const envBeforeStage = { ...options.env };
         let freshlyStaged: PreparedAdapterExecutionTargetRuntime | null = null;
         const stage: StageWorkspace = async (assets) => {
           const result = await options.stage(assets);
           freshlyStaged = result;
+          stageOwner.runtime = result;
           return result;
         };
         const seam = await options.measureStageStep(async (): Promise<ManagedHomeSeamResult> => {
@@ -268,10 +351,15 @@ export function createSandboxRunSite(options: SandboxRunSiteOptions): SandboxRun
             try {
               return await options.seedManagedHome(stage);
             } catch (seamErr) {
+              const held = retainActualStartupFailure(seamErr, options.startupRecovery, leaseRelease, freshlyStaged);
+              if (held) throw held;
               // The seam threw after a possible successful stage. Dispose the fresh
               // staged runtime so the abandoned in-sandbox managed home never leaks,
               // then rethrow the seam error.
-              if (freshlyStaged) await options.disposeFreshStagedRuntime(freshlyStaged);
+              if (freshlyStaged) {
+                try { await options.disposeFreshStagedRuntime(freshlyStaged); }
+                catch (cleanupError) { throw new AcpxStagedRuntimeCleanupError([seamErr, cleanupError], freshlyStaged); }
+              }
               throw seamErr;
             }
           }
@@ -288,7 +376,7 @@ export function createSandboxRunSite(options: SandboxRunSiteOptions): SandboxRun
           envDelta,
           reused: false,
         };
-      });
+      }, options.signal, release => { leaseRelease = release; }, options.startupRecovery, stageOwner);
       leaseRelease = lease.release;
       staged = lease.value;
       // Publish the referenced-project workspace hints (known only after staging).
@@ -363,13 +451,9 @@ export function createSandboxRunSite(options: SandboxRunSiteOptions): SandboxRun
       const [paperclip, processSession] = await Promise.allSettled([paperclipStart, processSessionStart]);
       controlBridge = paperclip.status === "fulfilled" ? paperclip.value : null;
       agentBridge = processSession.status === "fulfilled" ? processSession.value : null;
-      const failure =
-        paperclip.status === "rejected"
-          ? paperclip.reason
-          : processSession.status === "rejected"
-            ? processSession.reason
-            : null;
-      if (failure) throw failure;
+      const failures = [paperclip, processSession].filter((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+      if (failures.length === 1) throw failures[0]!.reason;
+      if (failures.length > 1) throw new AcpxBridgeStartupError(failures.map(outcome => outcome.reason));
       // Guarantee the merge ran even if the process-session bridge returned without
       // consuming the launch env (memoized, so a no-op if it did).
       await finalizeLaunchEnv();
@@ -400,12 +484,13 @@ export function createSandboxRunSite(options: SandboxRunSiteOptions): SandboxRun
         // Stop both bridges, then run the managed-home copy-back (mirrors the CLI
         // finally: stop bridge, then restore workspace).
         await options.stopBridges({ controlBridge, agentBridge });
-      } finally {
-        // Release the per-session staging lease in a finally, so an earlier
-        // teardown fault never strands it and deadlocks the next same-session run.
-        leaseRelease?.();
-        leaseRelease = null;
+      } catch (error) {
+        const failure = staged ? new AcpxStagedRuntimeCleanupError([error], staged.stagedRuntime, { controlBridge, agentBridge, leaseRelease }) : error;
+        retainStagingLease(leaseRelease, failure);
+        throw failure;
       }
+      leaseRelease?.();
+      leaseRelease = null;
     },
 
     get staged(): StagedWorkspace | null {
@@ -435,25 +520,68 @@ async function withStagingLease<T>(
   locks: Map<string, Promise<unknown>>,
   key: string,
   fn: () => Promise<T>,
+  signal?: AbortSignal,
+  onAdmitted?: (release: () => void) => void,
+  startupRecovery?: unknown,
+  stageOwner?: { runtime: PreparedAdapterExecutionTargetRuntime | null },
 ): Promise<{ value: T; release: () => void }> {
-  const prev = locks.get(key) ?? Promise.resolve();
+  if (signal?.aborted) throw new AcpxStagingWaitAbortedError(signal.reason);
+  const originalPrev = locks.get(key);
+  const prev = (originalPrev ?? Promise.resolve()).catch(() => {});
   let releaseGate!: () => void;
   const gate = new Promise<void>((resolve) => {
     releaseGate = resolve;
   });
   const mine: Promise<unknown> = prev.then(() => gate);
   locks.set(key, mine);
-  await prev.catch(() => {});
+  let canceled = false;
+  void mine.then(() => {
+    const head = locks.get(key);
+    if (canceled && (head === mine || (originalPrev !== undefined && head === originalPrev))) locks.delete(key);
+  }).catch(() => {});
+  const cancelReservation = () => {
+    canceled = true;
+    // Resolve only this reservation. A later waiter still follows mine, which
+    // cannot resolve before the original predecessor does.
+    releaseGate();
+    if (locks.get(key) === mine) {
+      if (originalPrev) locks.set(key, originalPrev);
+      else locks.delete(key);
+    }
+  };
+  let rejectWait!: (error: unknown) => void;
+  const aborted = new Promise<never>((_resolve, reject) => { rejectWait = reject; });
+  void aborted.catch(() => {});
+  const onAbort = () => { cancelReservation(); rejectWait(new AcpxStagingWaitAbortedError(signal!.reason)); };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    if (signal?.aborted) onAbort();
+    await Promise.race([prev, aborted]);
+    if (signal?.aborted) { cancelReservation(); throw new AcpxStagingWaitAbortedError(signal.reason); }
+  } finally { signal?.removeEventListener("abort", onAbort); }
   let released = false;
   const release = () => {
-    if (released) return;
+    if (released || stagingLeaseIsRetained(release)) return;
     released = true;
     releaseGate();
     if (locks.get(key) === mine) locks.delete(key);
   };
+  registerStagingLease(release);
   try {
+    onAdmitted?.(release);
     return { value: await fn(), release };
   } catch (error) {
+    const owned = retainActualStartupFailure(error, startupRecovery, release, stageOwner?.runtime ?? null);
+    if (owned) throw owned;
+    const startup = error instanceof AcpxStartupCancellationError ? AcpxStartupCancellationError.inspect(error)
+      : error instanceof AcpxStartupCleanupError ? AcpxStartupCleanupError.inspect(error) : undefined;
+    if (startup?.operations.length) {
+      const failure = new AcpxStagedRuntimeCleanupError([error], null, { startupError: error, operations: startup.operations, release });
+      retainStagingLease(release, failure);
+      if (stagingLeaseIsRetained(release)) associateStartupRecoveryLease(error, release);
+      throw failure;
+    }
+    if (error instanceof AcpxStagedRuntimeCleanupError) retainStagingLease(release, error);
     if (!released) release();
     throw error;
   }

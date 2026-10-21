@@ -78,6 +78,7 @@ export class ChatRuntime {
     options: CreateChatSdkEndpointRuntimeOptions,
   ): Promise<ChatEndpointRuntime> {
     if (this.shuttingDown) throw new Error("Chat SDK runtime is shutting down");
+    this.fenceEndpointAdmission(options.endpointId);
     const generation = this.nextReplacementGeneration(options.endpointId);
     return await this.enqueueLifecycle(options.endpointId, async () => {
       this.assertReplacementCurrent(options.endpointId, generation);
@@ -93,6 +94,7 @@ export class ChatRuntime {
 
   async replaceVoiceEndpoint(options: CreateVoiceRuntimeOptions): Promise<ChatEndpointRuntime> {
     if (this.shuttingDown) throw new Error("Chat runtime is shutting down");
+    this.fenceEndpointAdmission(options.endpointId);
     const generation = this.nextReplacementGeneration(options.endpointId);
     return this.enqueueLifecycle(options.endpointId, async () => {
       this.assertReplacementCurrent(options.endpointId, generation);
@@ -104,7 +106,19 @@ export class ChatRuntime {
     });
   }
 
+  isInsideEndpointCallback(endpointId: string): boolean {
+    const runtime = this.endpoints.get(endpointId) ?? this.retiringEndpoints.get(endpointId);
+    return !!runtime && "isInsideApplicationCallback" in runtime &&
+      typeof runtime.isInsideApplicationCallback === "function" && runtime.isInsideApplicationCallback() === true;
+  }
+
+  fenceEndpointAdmission(endpointId: string): void {
+    const runtime = this.endpoints.get(endpointId) ?? this.retiringEndpoints.get(endpointId);
+    if (runtime && "fenceAdmission" in runtime && typeof runtime.fenceAdmission === "function") runtime.fenceAdmission();
+  }
+
   async removeEndpoint(endpointId: string): Promise<boolean> {
+    this.fenceEndpointAdmission(endpointId);
     this.nextReplacementGeneration(endpointId);
     return await this.enqueueLifecycle(
       endpointId,
@@ -125,6 +139,9 @@ export class ChatRuntime {
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    for (const endpointId of new Set([...this.endpoints.keys(), ...this.retiringEndpoints.keys()])) {
+      this.fenceEndpointAdmission(endpointId);
+    }
     const endpointIds = new Set([
       ...this.endpoints.keys(),
       ...this.retiringEndpoints.keys(),

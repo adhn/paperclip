@@ -1,0 +1,4 @@
+# Test-only Linux x86_64 CPython 3.11 wheels; not production installation.
+cryptography==46.0.5 --hash=sha256:4c3341037c136030cb46e4b1e17b7418ea4cbd9dd207e4a6f3b2b24e0d4ac731
+cffi==2.0.0 --hash=sha256:8941aaadaf67246224cee8c3803777eed332a19d909b47e29c9842ef1e79ac26
+pycparser==3.0 --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992

@@ -59,6 +59,9 @@ export interface CommandManagedDuplexChannel {
 }
 
 export interface CommandManagedRuntimeRunner {
+  /** Optional host-owned long-lived service. Stop must verify all descendants. */
+  startService?(input: { command: string; args?: string[]; cwd?: string; env?: Record<string, string> }): Promise<{ stop(): Promise<void> }>;
+
   /**
    * True when the provider verified the concurrent-sync opt-in. A native runner
    * carries the value from the effective capability snapshot

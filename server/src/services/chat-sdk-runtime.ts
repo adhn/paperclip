@@ -637,6 +637,7 @@ interface SlackAdapterInternals {
 interface DiscordAdapterInternals {
   ensureRootThread?: unknown;
   paperclipCompatibilityRevision?: unknown;
+  paperclipGatewayCleanupFailed?: unknown;
   startGatewayListener?: unknown;
 }
 
@@ -650,6 +651,7 @@ interface DiscordChatInternals {
 
 interface DiscordCommandDispatch {
   raw: unknown;
+  active: boolean;
   response?: unknown;
 }
 
@@ -712,6 +714,8 @@ function installDiscordNativeCommands(
   applicationId: string,
   guildId: string,
   dispatchContext: AsyncLocalStorage<DiscordCommandDispatch>,
+  isRetired: () => boolean,
+  admittedTasks: Set<Promise<void>>,
 ): void {
   const discord = adapter as unknown as DiscordCommandAdapter;
   const sdk = chat as unknown as {
@@ -738,8 +742,7 @@ function installDiscordNativeCommands(
     "This command is not available here. Open the Paperclip task or ask an operator to check your chat access.";
   const unconfirmed =
     "This command could not be confirmed. Check the Paperclip task before trying again.";
-  discord.handleGatewayInteraction = async (interaction) => {
-    if (!interaction.isChatInputCommand()) return await original(interaction);
+  const handleNativeInteraction = async (interaction: DiscordCommandInteraction) => {
     const startedAt = Date.now();
     for (const [id, expiresAt] of attempted)
       if (expiresAt <= startedAt) attempted.delete(id);
@@ -824,7 +827,7 @@ function installDiscordNativeCommands(
       };
       const context = discord.getApplicationCommandContext(raw);
       if (context) {
-        const dispatch: DiscordCommandDispatch = { raw };
+        const dispatch: DiscordCommandDispatch = { raw, active: true };
         content = unconfirmed;
         try {
           await dispatchContext.run(dispatch, () =>
@@ -865,6 +868,8 @@ function installDiscordNativeCommands(
         } catch {
           // The application may already have committed. No synthetic success or
           // raw exception text, and no replay of the command in this adapter.
+        } finally {
+          dispatch.active = false;
         }
       }
     }
@@ -875,6 +880,18 @@ function installDiscordNativeCommands(
       /* Outcome unknown; no second response or callback replay. */
     }
   };
+  discord.handleGatewayInteraction = (interaction) => {
+    if (isRetired()) return Promise.resolve();
+    // Other interaction kinds retain their existing callback lifetime contract.
+    if (!interaction.isChatInputCommand()) return original(interaction);
+    const task = handleNativeInteraction(interaction);
+    admittedTasks.add(task);
+    void task.then(
+      () => admittedTasks.delete(task),
+      () => admittedTasks.delete(task),
+    );
+    return task;
+  };
 }
 
 function assertDiscordAdapterCompatibility(adapter: Adapter, chat: Chat): void {
@@ -883,6 +900,9 @@ function assertDiscordAdapterCompatibility(adapter: Adapter, chat: Chat): void {
     throw new DiscordAdapterCompatibilityError(
       "Paperclip patch revision paperclip-discord-v6 is unavailable",
     );
+  }
+  if (discord.paperclipGatewayCleanupFailed !== false) {
+    throw new DiscordAdapterCompatibilityError("retained Gateway cleanup state is unavailable");
   }
   if (typeof discord.startGatewayListener !== "function") {
     throw new DiscordAdapterCompatibilityError(
@@ -2038,7 +2058,12 @@ export class ChatSdkEndpointRuntime {
   private readonly teamsFileConsentEnabled: boolean;
   private discordGatewayAbort: AbortController | null = null;
   private discordGatewayTask: Promise<void> | null = null;
+  private readonly discordCommandTasks = new Set<Promise<void>>();
+  private readonly applicationCallbackTasks = new Set<Promise<unknown>>();
+  private readonly applicationCallbackFailures: unknown[] = [];
+  private readonly applicationCallbackContext = new AsyncLocalStorage<{ active: boolean }>();
   private discordGatewayFatal = false;
+  private discordGatewayCleanupFailed = false;
   private initialization: Promise<void> | null = null;
   private retired = false;
   private photonReceiver?: PhotonReceiver;
@@ -2104,7 +2129,12 @@ export class ChatSdkEndpointRuntime {
       : createProviderAdapter(
       options.providerConfig,
       options.logger,
-      options.callbacks,
+      {
+        ...options.callbacks,
+        onDiscordRootMentionAdmission: options.callbacks.onDiscordRootMentionAdmission
+          ? (event) => this.trackApplicationCallback(() => options.callbacks.onDiscordRootMentionAdmission!(event))
+          : undefined,
+      },
       options.endpointId,
       (fatal) => {
         this.discordGatewayFatal = fatal;
@@ -2122,6 +2152,7 @@ export class ChatSdkEndpointRuntime {
       }
       const processUpdate = adapter.processUpdate.bind(this.adapter);
       adapter.processUpdate = (update, webhookOptions) => {
+        if (this.retired) return;
         // The pinned webhook verifier calls processUpdate only after checking
         // the secret. No parser-normalized chat:0 input may enter ordinary work.
         if (hasTelegramEphemeralInput(update)) return;
@@ -2134,20 +2165,14 @@ export class ChatSdkEndpointRuntime {
               ? captureTelegramGenerationStopped(adapter.botUserId, update)
               : null;
           if (proof && options.callbacks.onTelegramGenerationStopped) {
-            const task = Promise.resolve().then(() =>
+            const task = this.trackApplicationCallback(() =>
               options.callbacks.onTelegramGenerationStopped!({
                 provider: "telegram",
                 endpointId: this.endpointId,
                 event: proof,
               }),
             );
-            attempt!.callbackPromises.add(task);
-            const handled = task
-              .catch((error) => {
-                if (attempt!.callbackError === undefined)
-                  attempt!.callbackError = error;
-              })
-              .finally(() => attempt!.callbackPromises.delete(task));
+            const handled = task.catch(() => undefined);
             webhookOptions?.waitUntil?.(handled);
           }
           return;
@@ -2199,21 +2224,7 @@ export class ChatSdkEndpointRuntime {
       this.endpointId,
       this.provider,
       options.callbacks,
-      async <T>(callback: () => Promise<T> | T): Promise<T> => {
-        const attempt = this.webhookIngress.getStore();
-        const promise = Promise.resolve().then(callback);
-        if (!attempt) return await promise;
-        attempt.callbackPromises.add(promise);
-        try {
-          return await promise;
-        } catch (error) {
-          if (attempt.callbackError === undefined)
-            attempt.callbackError = error;
-          throw error;
-        } finally {
-          attempt.callbackPromises.delete(promise);
-        }
-      },
+      <T>(callback: () => Promise<T> | T): Promise<T> => this.trackApplicationCallback(callback),
       (raw) => this.acceptsProviderScope(raw),
       () => this.webhookIngress.getStore()?.providerUpdateId,
       () =>
@@ -2233,6 +2244,8 @@ export class ChatSdkEndpointRuntime {
         options.providerConfig.credentials.applicationId,
         options.providerConfig.credentials.guildId,
         this.discordCommandDispatch,
+        () => this.retired,
+        this.discordCommandTasks,
       );
     }
     if (this.teamsFileConsentEnabled) {
@@ -2253,28 +2266,36 @@ export class ChatSdkEndpointRuntime {
         endpointId: this.endpointId,
         tenantId: this.microsoftTeamsTenantId,
         botAppId: options.providerConfig.credentials.appId,
-        onConsent: async (event) => {
-          const attempt = this.webhookIngress.getStore();
-          const promise = Promise.resolve().then(() =>
-            callback({
-              endpointId: this.endpointId,
-              provider: this.provider,
-              event,
-            }),
-          );
-          if (!attempt) return await promise;
-          attempt.callbackPromises.add(promise);
-          try {
-            return await promise;
-          } catch (error) {
-            if (attempt.callbackError === undefined)
-              attempt.callbackError = error;
-            throw error;
-          } finally {
-            attempt.callbackPromises.delete(promise);
-          }
-        },
+        onConsent: async (event) => this.trackApplicationCallback(() =>
+          callback({ endpointId: this.endpointId, provider: this.provider, event }),
+        ),
       });
+    }
+  }
+
+  private async trackApplicationCallback<T>(callback: () => Promise<T> | T): Promise<T> {
+    if (this.retired && this.discordCommandDispatch.getStore()?.active !== true) throw new Error("Chat SDK runtime is retired");
+    const attempt = this.webhookIngress.getStore();
+    const context = { active: true };
+    let admitted = false;
+    const promise = Promise.resolve().then(() => {
+      if (this.retired && this.discordCommandDispatch.getStore()?.active !== true) throw new Error("Chat SDK runtime is retired");
+      admitted = true;
+      return this.applicationCallbackContext.run(context, callback);
+    });
+    this.applicationCallbackTasks.add(promise);
+    attempt?.callbackPromises.add(promise);
+    try {
+      return await promise;
+    } catch (error) {
+      if (admitted) this.applicationCallbackFailures.push(error);
+      if (attempt && attempt.callbackError === undefined)
+        attempt.callbackError = error;
+      throw error;
+    } finally {
+      context.active = false;
+      this.applicationCallbackTasks.delete(promise);
+      attempt?.callbackPromises.delete(promise);
     }
   }
 
@@ -2335,9 +2356,12 @@ export class ChatSdkEndpointRuntime {
           );
           if (listener) await listener;
         } catch {
-          // The adapter logs provider-specific failures. Keep the supervisor
-          // alive so a transient start failure cannot become an unhandled
-          // rejection that tears down the server.
+          // A failed listener with completed cleanup can reconnect. A failed
+          // actual cleanup keeps this owner uncertain and forbids replacement.
+        }
+        if ((adapter as unknown as DiscordAdapterInternals).paperclipGatewayCleanupFailed === true) {
+          this.discordGatewayCleanupFailed = true;
+          this.discordGatewayFatal = true;
         }
         if (abort.signal.aborted || this.discordGatewayFatal) break;
         rapidRestartCount =
@@ -2709,6 +2733,7 @@ export class ChatSdkEndpointRuntime {
    * verified activity body therefore remains the authoritative tenant claim.
    */
   acceptsProviderScope(raw: unknown): boolean {
+    if (this.retired && this.discordCommandDispatch.getStore()?.active !== true) return false;
     if (this.provider === "discord" && this.discordGuildId) {
       if (!isRecord(raw)) return false;
       const guildId = raw.guild_id;
@@ -3125,10 +3150,19 @@ export class ChatSdkEndpointRuntime {
     });
   }
 
+  isInsideApplicationCallback(): boolean {
+    return this.applicationCallbackContext.getStore()?.active === true;
+  }
+
+  fenceAdmission(): void {
+    this.retired = true;
+    this.discordGatewayAbort?.abort();
+  }
+
   async shutdown(): Promise<void> {
     // Set synchronously: an already-resolving initialize must not start a
     // Gateway after retirement, and this runtime can never be reinitialized.
-    this.retired = true;
+    this.fenceAdmission();
     if (this.shutdownCompleted) return;
     if (this.shutdownTask) return await this.shutdownTask;
     this.discordGatewayAbort?.abort();
@@ -3138,8 +3172,21 @@ export class ChatSdkEndpointRuntime {
       await this.initialization?.catch(() => undefined);
       await this.discordGatewayTask?.catch(() => undefined);
       this.discordGatewayAbort = null;
-      await this.photonReceiver?.close();
-      await this.chat.shutdown();
+      const failures: unknown[] = [];
+      try { await this.photonReceiver?.close(); } catch (error) { failures.push(error); }
+      // Gateway transport shutdown does not join SDK fire-and-forget native
+      // command callbacks. Keep their ack/application/final-reply chain owned
+      // until settled; settlement is not proof of provider outcome or retirement.
+      await Promise.allSettled([...this.discordCommandTasks, ...this.applicationCallbackTasks]);
+      failures.push(...this.applicationCallbackFailures);
+      // Independent adapter/state cleanup still runs after receiver failure.
+      try { await this.chat.shutdown(); } catch (error) { failures.push(error); }
+      if (this.discordGatewayCleanupFailed ||
+          (this.adapter as unknown as DiscordAdapterInternals).paperclipGatewayCleanupFailed === true) {
+        failures.push(new Error("Discord Gateway cleanup remains uncertain"));
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Endpoint cleanup is incomplete");
       this.shutdownCompleted = true;
     })();
     this.shutdownTask = task;
@@ -3245,6 +3292,7 @@ export class ChatSdkRuntime {
     options: CreateChatSdkEndpointRuntimeOptions,
   ): Promise<ChatSdkEndpointRuntime> {
     if (this.shuttingDown) throw new Error("Chat SDK runtime is shutting down");
+    this.fenceEndpointAdmission(options.endpointId);
     const generation = this.nextReplacementGeneration(options.endpointId);
     return await this.enqueueLifecycle(options.endpointId, async () => {
       this.assertReplacementCurrent(options.endpointId, generation);
@@ -3258,7 +3306,16 @@ export class ChatSdkRuntime {
     });
   }
 
+  isInsideEndpointCallback(endpointId: string): boolean {
+    return (this.endpoints.get(endpointId) ?? this.retiringEndpoints.get(endpointId))?.isInsideApplicationCallback() ?? false;
+  }
+
+  fenceEndpointAdmission(endpointId: string): void {
+    (this.endpoints.get(endpointId) ?? this.retiringEndpoints.get(endpointId))?.fenceAdmission();
+  }
+
   async removeEndpoint(endpointId: string): Promise<boolean> {
+    this.fenceEndpointAdmission(endpointId);
     this.nextReplacementGeneration(endpointId);
     return await this.enqueueLifecycle(
       endpointId,
@@ -3279,6 +3336,9 @@ export class ChatSdkRuntime {
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    for (const endpointId of new Set([...this.endpoints.keys(), ...this.retiringEndpoints.keys()])) {
+      this.fenceEndpointAdmission(endpointId);
+    }
     const endpointIds = new Set([
       ...this.endpoints.keys(),
       ...this.retiringEndpoints.keys(),

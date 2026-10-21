@@ -225,27 +225,13 @@ export async function ensureSymlink(target: string, source: string): Promise<voi
     return;
   }
 
-  if (!existing.isSymbolicLink()) {
-    // A previous Paperclip version copied this file into the managed home
-    // instead of symlinking it. Codex refresh tokens rotate and are
-    // single-use, so a stale copy fails with refresh_token_reused on the next
-    // run (#5028). Replace the regular file with a symlink so the CLI follows
-    // the live source. Safe to delete: target is always under the
-    // Paperclip-managed company home, never the user's real ~/.codex.
-    // Directories are left alone — `fs.unlink` would throw EISDIR on Unix
-    // (and behave inconsistently on Windows). A directory at this path is not
-    // a Paperclip-written stale copy and warrants operator inspection rather
-    // than silent removal.
-    if (existing.isDirectory()) return;
-    await fs.unlink(target);
-    await createExpectedSymlink(target, source);
-    return;
-  }
-
+  // A directory is unexpected operator state, never credential residue.
+  if (existing.isDirectory()) return;
   if (await isExpectedSymlink(target, source)) return;
 
-  await fs.unlink(target);
-  await createExpectedSymlink(target, source);
+  await replacePreparedAuth(target, async (prepared) => {
+    await fs.symlink(source, prepared);
+  });
 }
 
 async function ensureCopiedFile(target: string, source: string): Promise<void> {
@@ -348,6 +334,26 @@ export async function writeManagedCodexMcpConfig(input: {
   return { configPath, warnings };
 }
 
+// Prepare on the target filesystem, then replace the directory entry in one
+// rename. Preparation or rename failure leaves the old credential/alias intact.
+// This is local replacement atomicity, not fsync durability or writer exclusion.
+async function replacePreparedAuth(
+  target: string,
+  prepare: (prepared: string) => Promise<void>,
+): Promise<void> {
+  await ensureParentDir(target);
+  const staging = await fs.mkdtemp(path.join(path.dirname(target), ".paperclip-auth-"));
+  try {
+    const prepared = path.join(staging, "auth.json");
+    await prepare(prepared);
+    await fs.rename(prepared, target);
+  } finally {
+    // A cleanup failure is surfaced: callers must not infer that rejection
+    // means the rename did not happen. Retrying prepares the selected auth anew.
+    await fs.rm(staging, { recursive: true, force: true });
+  }
+}
+
 /**
  * Writes an `auth.json` containing only `OPENAI_API_KEY` so the codex CLI can
  * authenticate via API key. Overwrites any existing file or symlink at that
@@ -356,9 +362,13 @@ export async function writeManagedCodexMcpConfig(input: {
  */
 export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise<void> {
   await fs.mkdir(home, { recursive: true });
-  const target = path.join(home, "auth.json");
-  await fs.rm(target, { force: true });
-  await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
+  await replacePreparedAuth(path.join(home, "auth.json"), async (prepared) => {
+    await fs.writeFile(prepared, JSON.stringify({ OPENAI_API_KEY: apiKey }), {
+      mode: 0o600,
+      flag: "wx",
+    });
+    await fs.chmod(prepared, 0o600);
+  });
 }
 
 export interface StageCodexHomeForSyncOptions {
@@ -636,7 +646,7 @@ export async function seedManagedCodexHome(
   // regular file, and that file is the durable outcome of an interactive login,
   // so it must survive re-seeding. Everything else — an apikey-mode file left by
   // a previous run, a stale pre-symlink copy of the shared credential (#5028),
-  // or an unreadable payload — is residue, and removing it lets the chatgpt-mode
+  // or an unreadable payload — is residue, and replacing it lets the chatgpt-mode
   // symlink be restored (ensureSymlink would otherwise replace it and Codex
   // would keep authenticating with the stale key).
   //
@@ -719,8 +729,6 @@ export async function seedManagedCodexHome(
           "stdout",
           `[paperclip] Keeping the promoted subscription auth.json in Codex home "${targetHome}".\n`,
         );
-      } else {
-        await fs.rm(authPath, { force: true });
       }
     }
   }
@@ -730,7 +738,7 @@ export async function seedManagedCodexHome(
       // The kept promoted credential is authoritative for this home; the shared
       // symlink would silently swap the account back to the host login. A
       // credential-store entry's auth.json is authoritative unconditionally.
-      if (name === "auth.json" && (keepPromotedAuth || credentialStoreEntry)) continue;
+      if (name === "auth.json" && (apiKey || keepPromotedAuth || credentialStoreEntry)) continue;
       const source = path.join(sourceHome, name);
       if (!(await pathExists(source))) continue;
       await ensureSymlink(path.join(targetHome, name), source);

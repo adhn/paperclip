@@ -1,0 +1,9 @@
+# Disposable test image only. Production image/digest is a separate review gate.
+ARG BASE=python:3.11-slim-bookworm
+FROM ${BASE}
+WORKDIR /app
+COPY launch_consumption.py legacy_review.py test_legacy_review.py authority.py service.py state_contract.py safe_transfer.py durable_state.py kubernetes_boundary.py cri_stop_witness.py test_authority.py test_transfer.py test_durable_state.py test_kubernetes_boundary.py test_cri_stop_witness.py /app/
+COPY kubernetes-review/render.py kubernetes-review/test_review.py /app/kubernetes-review/
+USER 2000:2000
+ENV PYTHONDONTWRITEBYTECODE=1
+ENTRYPOINT ["python3", "/app/service.py"]

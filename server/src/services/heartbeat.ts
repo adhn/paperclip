@@ -1,3 +1,6 @@
+import { withCapacityRun, stopCapacityAgentOperations, reconcileStoppedCapacityReservations } from "./execution-capacity-lifetime.js";
+import { capacityWorkspaceContract } from "./execution-capacity-policy.js";
+import { executionCapacity, guardCapacityExecution, guardCapacityWorkspaceConfiguration, registerCapacityProgress } from "./execution-capacity-context.js";
 import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing.js";
 import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkingCopy } from "./heartbeat/instruction-working-copy.js";
 import { prepareHeartbeatRuntimeServiceIntents, startHeartbeatRuntimeServices, recordHeartbeatAdapterRuntimeServices } from "./heartbeat/runtime-services.js";
@@ -724,6 +727,9 @@ export type HeartbeatEnvironmentRuntime = ReturnType<
 >;
 
 export interface HeartbeatServiceOptions {
+  /** Candidate host-only injection. No env/API activation until all execution
+   * paths, canonical scopes and stop/restoration reconciliation are complete. */
+  executionAdmission?: Pick<ReturnType<typeof import("./execution-admission.js").executionAdmissionService>, "claimTransaction"> & Partial<Pick<ReturnType<typeof import("./execution-admission.js").executionAdmissionService>, "prepareRun" | "queuedAgents">>;
   /** Test seam before the atomic native runtime handoff. */
   beforeNativeRuntimeSelection?: (runId: string) => Promise<void>;
   /** Test seam immediately before the durable chat-control admission check. */
@@ -798,6 +804,8 @@ export function heartbeatService(
   db: Db,
   options: HeartbeatServiceOptions = {},
 ) {
+  const capacity = executionCapacity(db);
+  if (capacity) options = { ...options, executionAdmission: capacity };
   const {
     getAgent,
     resolveSessionBeforeForWakeup,
@@ -1271,6 +1279,11 @@ export function heartbeatService(
   function startNextQueuedRunForAgent(...args: Parameters<typeof heartbeatQueue.startNextQueuedRunForAgent>) {
     return heartbeatQueue.startNextQueuedRunForAgent(...args);
   }
+  if (capacity) registerCapacityProgress(db, async () => {
+    await reconcileStoppedCapacityReservations(db);
+    const [agentId] = await capacity.queuedAgents();
+    if (agentId) await startNextQueuedRunForAgent(agentId);
+  });
 
   function dispatchPendingNativeStatusWakeups(...args: Parameters<typeof heartbeatQueue.dispatchPendingNativeStatusWakeups>) {
     return heartbeatQueue.dispatchPendingNativeStatusWakeups(...args);
@@ -1798,8 +1811,9 @@ export function heartbeatService(
     runOptions: {
       nativeLeaseOwner?: string;
       nativeRestartRecovery?: NativeRestartRecoveryClaim;
+      capacityEntered?: boolean;
     } = {},
-  ) {
+  ): Promise<void> {
     const attemptStartedAtMs = Date.now();
     let attestedQuestionResponseAtMs: number | null = null;
     if ((await getSchedulingSuppression()).suppressed) {
@@ -1829,6 +1843,10 @@ export function heartbeatService(
       run = claimed;
     }
 
+    if (capacity && !runOptions.capacityEntered) {
+      return withCapacityRun(db, run.id, () => executeRun(runId, { ...runOptions, capacityEntered: true }))
+        .finally(() => startNextQueuedRunForAgent(run.agentId));
+    }
     const releaseInstructionCopy = createHeartbeatInstructionCopyRelease(run, instructionCopies, appendRunEvent);
 
     if (
@@ -1958,6 +1976,7 @@ export function heartbeatService(
     let identityRedactor = createAgentIdentityRedactor();
 
     try {
+      await guardCapacityExecution(db, { companyId: run.companyId, runId: run.id });
       let agent = await getAgent(run.agentId);
       if (!agent) {
         await setRunStatus(runId, "failed", {
@@ -2593,6 +2612,10 @@ export function heartbeatService(
           ...(requestedAiBinding?.mode === "router" ? parseObject(parseObject(context.aiRouterSelection).runtimeConfig) : {}),
         },
       });
+      const admissionWorkspaceConfiguration = capacityWorkspaceContract({ sourceWorkspaceConfig,
+        projectEnv: taskProjectContext?.env, routineEnv: routineEnvContext.env, aiBinding });
+      await guardCapacityWorkspaceConfiguration(db, { companyId: run.companyId, runId: run.id,
+        configuration: admissionWorkspaceConfiguration });
       const {
         persistedRunnerProfile,
         persistedNativeExecutionInput,
@@ -2716,7 +2739,7 @@ export function heartbeatService(
           environmentResolution,
           resolvedInstanceSettings,
         },
-        config: {
+        config: { admissionSourceConfiguration: admissionWorkspaceConfiguration,
           mergedConfig,
           configSnapshot,
           secretManifest,
@@ -3353,6 +3376,7 @@ export function heartbeatService(
             nativeWorkspaceSync,
             workspaceRestoreSource,
             remoteExecution,
+            activeEnvironmentLease,
           },
           config: {
             runtimeConfig,
@@ -3898,6 +3922,7 @@ export function heartbeatService(
   }
 
   async function stopInvocationsForAgents(agentIds: string[], reason: string) {
+    await stopCapacityAgentOperations(db, agentIds);
     await cancelInvocationsForAgentsInternal(agentIds, reason);
     const runs = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.agentId, agentIds));
     const leasesToRelease = await db.select({ runId: environmentLeases.heartbeatRunId }).from(environmentLeases)

@@ -1,4 +1,5 @@
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
+import { stopCapacityRunCommands } from "../execution-capacity-lifetime.js";
 import { DEFERRED_WAKE_CONTEXT_KEY } from "./queue.js";
 import { CANCELLABLE_HEARTBEAT_RUN_STATUSES } from "./recovery.js";
 import {
@@ -910,6 +911,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     )
       return run;
     const agent = await getAgent(run.agentId);
+    await stopCapacityRunCommands(db, run.companyId, run.id);
     const errorCode = options.errorCode ?? "cancelled";
     const cancellation = requestedRunCancellation(options.resultJson ?? {}, reason);
 
@@ -1040,17 +1042,23 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
               ...(options.cancellationRequestId ? { cancellationRequestId: options.cancellationRequestId } : {}),
             });
             if (running) {
-              await terminateHeartbeatRunProcess({
-                pid: running.child.pid,
-                processGroupId: running.processGroupId,
-                // Codex handles Ctrl-C by cancelling its tool sessions. SIGTERM
-                // can leave commands in their separate process groups alive.
-                signal: !control && agent?.adapterType === "codex_local" ? "SIGINT" : undefined,
-                graceMs: cancellationTerminationGraceMs(
-                  running.graceSec,
-                  options.terminationGraceMs,
-                ),
-              });
+              // Do not acknowledge cancellation on local SSH-client exit alone.
+              // Failure leaves cancellation unverified and propagates to the operator.
+              await running.stopRemote?.();
+              // Remote proof can arrive after SSH exits. Never signal its old PID.
+              if (!running.stopRemote || (running.child.exitCode == null && running.child.signalCode == null)) {
+                await terminateHeartbeatRunProcess({
+                  pid: running.child.pid,
+                  processGroupId: running.processGroupId,
+                  // Codex handles Ctrl-C by cancelling its tool sessions. SIGTERM
+                  // can leave commands in their separate process groups alive.
+                  signal: !control && agent?.adapterType === "codex_local" ? "SIGINT" : undefined,
+                  graceMs: cancellationTerminationGraceMs(
+                    running.graceSec,
+                    options.terminationGraceMs,
+                  ),
+                });
+              }
             }
             terminationSettled = true;
           } finally {

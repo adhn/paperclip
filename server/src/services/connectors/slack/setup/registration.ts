@@ -1,3 +1,5 @@
+import type { SecretRecoveryIdentity } from "../../../secret-recovery-identity-schema.js";
+import { readSecretRecoveryIdentity } from "../../../secret-recovery-identity.js";
 import { notifyChatVerificationWork } from "../../../chat-work-notifications.js";
 import { createAgentAvatarPool } from "../../../agent-avatar-pool.js";
 import type { AgentAvatarRequest } from "../../../agent-avatars.js";
@@ -39,6 +41,7 @@ export type SlackSetupOptions = {
   withLock: <T>(endpointId: string, work: (lease: CredentialMutationLeaseGuard) => Promise<T>) => Promise<T>;
   runtimeSigningSecret: (endpointId: string) => Promise<string>;
   runtimeBotToken: (endpointId: string) => Promise<string>;
+  runtimeBotCredential?: (endpointId: string) => Promise<{ value: string; identity: SecretRecoveryIdentity }>;
   canWelcome: (endpointId: string, account: SlackAccountState) => Promise<boolean>;
   linkInstaller: (endpointId: string, user: Record<string, unknown>, actor: SlackSetupActor, lease: CredentialMutationLeaseGuard) => Promise<void>;
   configure: (endpointId: string, credentials: Record<string, string>, actor: SlackSetupActor, lease: CredentialMutationLeaseGuard) => Promise<unknown>;
@@ -105,6 +108,10 @@ export function createSlackRegistrationStore(db: Db, options: SlackSetupOptions)
       await lease.assertOwned(tx);
     });
   }
+  async function readSecretIdentity(row: Registration, key: string) {
+    if (!row.secretIds[key]) throw conflict("Slack setup credentials are unavailable. Resume the saved connection.");
+    return readSecretRecoveryIdentity(db, row.companyId, row.secretIds[key]);
+  }
   async function readSecret(row: Registration, key: string) {
     if (!row.secretIds[key]) throw conflict("Slack setup credentials are unavailable. Resume the saved connection.");
     return vault.resolveSecretValue(row.companyId, row.secretIds[key], "latest", {
@@ -130,7 +137,7 @@ export function createSlackRegistrationStore(db: Db, options: SlackSetupOptions)
     });
   }
   const renderAvatar = (request: AgentAvatarRequest) => (options.renderAvatar ?? (avatarPool ??= createAgentAvatarPool()).render)(request);
-  return { db, options, origin, callbackUri, registration, endpoint, assertOrigins, audit, api, saveSecrets, readSecret, setFailure, saveAvatar, renderAvatar,
+  return { db, options, origin, callbackUri, registration, endpoint, assertOrigins, audit, api, saveSecrets, readSecret, readSecretIdentity, setFailure, saveAvatar, renderAvatar,
     close: async () => { await avatarPool?.close(); } };
 }
 export type SlackRegistrationStore = ReturnType<typeof createSlackRegistrationStore>;

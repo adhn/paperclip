@@ -1,0 +1,3206 @@
+{
+  "date": "2026-10-21",
+  "branch": "migration/extract-homelab-paperclip-runtime-and-tests",
+  "baseRevision": "252d9b5077f4eee98ec48225641ef1a02d824158",
+  "nativeDeltas": [
+    {
+      "path": "package.json",
+      "kind": "native-working-source",
+      "sha256": "65d22ac8bec12a703a277c669c3510a51817558b532fa45610889085822d1d5f"
+    },
+    {
+      "path": "packages/adapter-utils/src/acpx-engine/execute.test.ts",
+      "kind": "native-working-source",
+      "sha256": "b7441aed2a328f7432bc89fce9c3b188fb6f5a9c59ad799412047cb8bca9cd18"
+    },
+    {
+      "path": "packages/adapter-utils/src/acpx-engine/execute.ts",
+      "kind": "native-working-source",
+      "sha256": "b75f79b139de7e7acdd77f744e226d6da49d97a1bde0a9550b9c58b363064921"
+    },
+    {
+      "path": "packages/adapter-utils/src/acpx-engine/run-site-host.test.ts",
+      "kind": "native-working-source",
+      "sha256": "20864d6a4519e08ca01610c6d9aa53fb6a4927a3e732370d11bbd520ba020e58"
+    },
+    {
+      "path": "packages/adapter-utils/src/acpx-engine/run-site-host.ts",
+      "kind": "native-working-source",
+      "sha256": "fcf4af063f79069cc1d09dde55e33c6ea35035615b30e42c6dc83632b441031b"
+    },
+    {
+      "path": "packages/adapter-utils/src/acpx-engine/run-site-sandbox.test.ts",
+      "kind": "native-working-source",
+      "sha256": "7d633c2587ea734a32f25daec83a593da3f7a39c033cdbf79b629d78ba7dad2d"
+    },
+    {
+      "path": "packages/adapter-utils/src/acpx-engine/run-site-sandbox.ts",
+      "kind": "native-working-source",
+      "sha256": "c14ace58d5fd2fa69a6b13222d006342c4f6f3d544b9a8b486799817796afcee"
+    },
+    {
+      "path": "packages/adapter-utils/src/acpx-engine/session-reuse-store.test.ts",
+      "kind": "native-working-source",
+      "sha256": "c3c331346946ed53d5101358d44a64c73920bea8e33e725782961b4313ac07bc"
+    },
+    {
+      "path": "packages/adapter-utils/src/acpx-engine/session-reuse-store.ts",
+      "kind": "native-working-source",
+      "sha256": "dab97430469eca8dfe3d9f0a0b9323643dc40c8079174aa75c900cca9d4f2017"
+    },
+    {
+      "path": "packages/adapter-utils/src/acpx-engine/startup-cancellation.test.ts",
+      "kind": "native-working-source",
+      "sha256": "d4eacaa3b16aafc72d83facef55eb3b00f57dc4015f06c246ea24abd0a6b7ce9"
+    },
+    {
+      "path": "packages/adapter-utils/src/acpx-engine/startup-cancellation.ts",
+      "kind": "native-working-source",
+      "sha256": "9705deb3a27957120e8953a9ccd0feb3077a5fb38643aa99a9a7ece0a2a4da37"
+    },
+    {
+      "path": "packages/adapter-utils/src/command-managed-runtime.ts",
+      "kind": "native-working-source",
+      "sha256": "a51d1e3cd3c7c14ae6e751e15d32bc76879cc83f8f320b6bc043a4194a043deb"
+    },
+    {
+      "path": "packages/adapter-utils/src/execution-state-journal.ts",
+      "kind": "native-working-source",
+      "sha256": "94af6b00a3ded501008bd04668c22d55c5b812f3f947cbd66fc84760184c5515"
+    },
+    {
+      "path": "packages/adapter-utils/src/execution-target.ts",
+      "kind": "native-working-source",
+      "sha256": "a3e4c4c65a016d3f75155b54d0c1d27f2ab840abd2a00cca934fd62827a0bbdf"
+    },
+    {
+      "path": "packages/adapter-utils/src/provider-stopped-boundary.test.ts",
+      "kind": "native-working-source",
+      "sha256": "5ddde9659ca5d26bf9bc5d28f3a70d715a28286399dcdfd38e7e224c1840668e"
+    },
+    {
+      "path": "packages/adapter-utils/src/provider-stopped-boundary.ts",
+      "kind": "native-working-source",
+      "sha256": "49c125ec0f947af6913d47023735e72c05ba84175f3ed0a15d23cf55fd630919"
+    },
+    {
+      "path": "packages/adapter-utils/src/remote-managed-runtime.ts",
+      "kind": "native-working-source",
+      "sha256": "d20b701e2db9f9fc32dcba70bdbcba3d6098e35199428bac0962f4ee229210ab"
+    },
+    {
+      "path": "packages/adapter-utils/src/sandbox-callback-bridge.ts",
+      "kind": "native-working-source",
+      "sha256": "aac0948aec9aabd359f4933c0607a512ef6c3ef886423b6c63e558b4d0fdb5a6"
+    },
+    {
+      "path": "packages/adapter-utils/src/sandbox-managed-runtime.ts",
+      "kind": "native-working-source",
+      "sha256": "f0acdfa04da81b74d002ddee0ee5d56b1d5736ef2ddc8bfd6fce5d96a9019613"
+    },
+    {
+      "path": "packages/adapter-utils/src/server-utils.ts",
+      "kind": "native-working-source",
+      "sha256": "f3fbcc2d2c1b2fc2b4ab0465fdf2fdfbf01c01c4dd848a7ce57dac75ee6f76e8"
+    },
+    {
+      "path": "packages/adapter-utils/src/ssh-command-managed.test.ts",
+      "kind": "native-working-source",
+      "sha256": "1e5c0df1dad7a8a5c98880fe0db751110463ea3cd5046f241d3a7ce8a6b893bf"
+    },
+    {
+      "path": "packages/adapter-utils/src/ssh.ts",
+      "kind": "native-working-source",
+      "sha256": "a647a71bb077e43e92aa86e75d7cca930fd683c1b860dfaa4f5e1faa041a1877"
+    },
+    {
+      "path": "packages/adapter-utils/src/types.ts",
+      "kind": "native-working-source",
+      "sha256": "299125fc29eb8f92f701a3d70ecd8aac4ff317aca457fb0be02f7eab7f22b025"
+    },
+    {
+      "path": "packages/adapter-utils/src/workspace-restore-merge.ts",
+      "kind": "native-working-source",
+      "sha256": "55fe88b633a514b1c215b4af9a65b3404e0f09150c2b89f9737db8ac253e63f1"
+    },
+    {
+      "path": "packages/adapters/claude-local/src/server/claude-config.test.ts",
+      "kind": "native-working-source",
+      "sha256": "1d683b40ed6d896748c2f83e4a95cb2942de31efed0938b29b40f245e9db3db8"
+    },
+    {
+      "path": "packages/adapters/claude-local/src/server/claude-config.ts",
+      "kind": "native-working-source",
+      "sha256": "18a1200a2f6e90d9db067a97a77f7e262f0e7f34c91dd94d41b93d1a5ee76ca5"
+    },
+    {
+      "path": "packages/adapters/claude-local/src/server/claude-transcript-repair.test.ts",
+      "kind": "native-working-source",
+      "sha256": "8e72127af5b001789dcb061904a7cbf6641cb0133fddb118eb9bd226958aa3be"
+    },
+    {
+      "path": "packages/adapters/claude-local/src/server/claude-transcript-repair.ts",
+      "kind": "native-working-source",
+      "sha256": "36b763f0b0a44a78cb72ffa6114c5147e6a4667a518920a6eb5d53115a65b7b4"
+    },
+    {
+      "path": "packages/adapters/claude-local/src/server/execute.ts",
+      "kind": "native-working-source",
+      "sha256": "96df9d73058bc1db17a3b5fe1657f3015da807bf8b424556270ebb912611a803"
+    },
+    {
+      "path": "packages/adapters/codex-local/src/server/codex-auth-cache.test.ts",
+      "kind": "native-working-source",
+      "sha256": "94c48a175d978cfdb8c9a7d68c5e4d219c16e9ef526b75065b89edee4f6826d2"
+    },
+    {
+      "path": "packages/adapters/codex-local/src/server/codex-auth-cache.ts",
+      "kind": "native-working-source",
+      "sha256": "434325abc1c3ad66132abd2a521427080f06a19a61944d419efef1f840f1464f"
+    },
+    {
+      "path": "packages/adapters/codex-local/src/server/codex-auth-copyback.ts",
+      "kind": "native-working-source",
+      "sha256": "ee1cd9e439ec43c42a5a4b6c8c51ab5ac60f2be2e296e805bf2ef241e93d38cc"
+    },
+    {
+      "path": "packages/adapters/codex-local/src/server/codex-auth-seed-write.ts",
+      "kind": "native-working-source",
+      "sha256": "95315a6874a3c46046b1f4b6c903362c3326a3f9ae225186d6cbc4d2cdba4778"
+    },
+    {
+      "path": "packages/adapters/codex-local/src/server/codex-home.test.ts",
+      "kind": "native-working-source",
+      "sha256": "d5632f51531e442523f58a2d5f0f1d3cefec495a0f07238627e2bfba0c8cf57c"
+    },
+    {
+      "path": "packages/adapters/codex-local/src/server/codex-home.ts",
+      "kind": "native-working-source",
+      "sha256": "7aa382593707bff4f85210052561514eb790a692ae14ad1dc3e200a3f372110a"
+    },
+    {
+      "path": "packages/adapters/codex-local/src/server/execute.ts",
+      "kind": "native-working-source",
+      "sha256": "b36c94fd9eca7a4f3312026b87fc99d0f16527a87d060fe8ee02c1ef3cfe8c0b"
+    },
+    {
+      "path": "packages/adapters/codex-local/src/server/test.ts",
+      "kind": "native-working-source",
+      "sha256": "68da9c57cc8b9f0c2d5e3ae2eef5a8271f5ac5434e06b2f0fbde4ce751a081ee"
+    },
+    {
+      "path": "packages/db/src/migrations/0340_execution_admission.sql",
+      "kind": "native-working-source",
+      "sha256": "714b9ed3c5e86f8f5c56ac234a05e4a57439d6008ff745caad3d55a03e71bba0"
+    },
+    {
+      "path": "packages/db/src/migrations/0341_execution_operations.sql",
+      "kind": "native-working-source",
+      "sha256": "82d98e119d0ac7af6b162dad83b5baf14c925e8b828c31ccb048ee717cd4fb4f"
+    },
+    {
+      "path": "packages/db/src/migrations/0342_execution_operations.sql",
+      "kind": "native-working-source",
+      "sha256": "e981e82200524e732c24b59416a19548ea94c7861fdd8005755ab92dd6bded5e"
+    },
+    {
+      "path": "packages/db/src/migrations/0343_execution_operations.sql",
+      "kind": "native-working-source",
+      "sha256": "c69491abba55e77beb5e2748804df2272cdd49b981ddfcb121344b0db4a1f85b"
+    },
+    {
+      "path": "packages/db/src/migrations/0344_volatile_colossus.sql",
+      "kind": "native-working-source",
+      "sha256": "a71b0239aa6a119d7294a100141c410ebab01d22a5f9700cbeb419bbf4bb50e7"
+    },
+    {
+      "path": "packages/db/src/migrations/0345_legacy_present_day_decisions.sql",
+      "kind": "native-working-source",
+      "sha256": "cfae40415fe4e929992e746070398ddd3dbbc9178eeb3bc281e7b35884f32798"
+    },
+    {
+      "path": "packages/db/src/migrations/0346_protected_authority.sql",
+      "kind": "native-working-source",
+      "sha256": "6cbce21bd17ea57782afe952cd894e42f22d3f02ff83648846b89bd8ef1ab449"
+    },
+    {
+      "path": "packages/db/src/migrations/meta/0335_snapshot.json",
+      "kind": "native-working-deletion"
+    },
+    {
+      "path": "packages/db/src/migrations/meta/0336_snapshot.json",
+      "kind": "native-working-deletion"
+    },
+    {
+      "path": "packages/db/src/migrations/meta/0337_snapshot.json",
+      "kind": "native-working-deletion"
+    },
+    {
+      "path": "packages/db/src/migrations/meta/0338_snapshot.json",
+      "kind": "native-working-deletion"
+    },
+    {
+      "path": "packages/db/src/migrations/meta/0339_snapshot.json",
+      "kind": "native-working-deletion"
+    },
+    {
+      "path": "packages/db/src/migrations/meta/0342_snapshot.json",
+      "kind": "native-working-source",
+      "sha256": "3baad32e842df2a8214a6cfa35a991f737579eacc875d90f0762f8a4fc979b8a"
+    },
+    {
+      "path": "packages/db/src/migrations/meta/0343_snapshot.json",
+      "kind": "native-working-source",
+      "sha256": "cd25d062b7ed55173d0ed0644da8857deb73bb2e447c11cd3e6a0f95b2066655"
+    },
+    {
+      "path": "packages/db/src/migrations/meta/0344_snapshot.json",
+      "kind": "native-working-source",
+      "sha256": "e606b8bdc72f6317e84c03e0a9a4b39d95ccb6b12c53a227f9859064fd360977"
+    },
+    {
+      "path": "packages/db/src/migrations/meta/0345_snapshot.json",
+      "kind": "native-working-source",
+      "sha256": "c66a68af474cb61d44315117160943de92cd90898023d69fb2477e9073c053eb"
+    },
+    {
+      "path": "packages/db/src/migrations/meta/0346_snapshot.json",
+      "kind": "native-working-source",
+      "sha256": "5fe7017e4b69a98af65fcfc66ab0565630965947a3a582acde935d9e2e1f8e4d"
+    },
+    {
+      "path": "packages/db/src/migrations/meta/_journal.json",
+      "kind": "native-working-source",
+      "sha256": "d54be08c19a7bd28338412eba18b24c530d5799abd281d6b4c31740fd175d71a"
+    },
+    {
+      "path": "packages/db/src/schema/execution_admission.ts",
+      "kind": "native-working-source",
+      "sha256": "707e3eec4bcde82405fc60851def33615e10163c4bdc3dba47d73688a7949ea2"
+    },
+    {
+      "path": "packages/db/src/schema/index.ts",
+      "kind": "native-working-source",
+      "sha256": "485e36a3fc0ad0660574ab1817d3bc4d61af026dddb47f7129715681d46e75f7"
+    },
+    {
+      "path": "patches/@azure__msal-node@5.6.0.patch",
+      "kind": "native-working-source",
+      "sha256": "cca614e2faee5a501d310527f8a076fae4f6a3715ddeb9ca109b58bdb7fcdd2d"
+    },
+    {
+      "path": "patches/@chat-adapter__discord@4.39.0.patch",
+      "kind": "native-working-source",
+      "sha256": "6097e177e54a3c102e89d751d09422a40bac8206c06095b642223d8b86ca0356"
+    },
+    {
+      "path": "patches/@photon-ai__advanced-imessage@2.1.0.patch",
+      "kind": "native-working-source",
+      "sha256": "070fbf838b9fd8e4dd9a450351a66d8b6f9c50b98ce57011a8bcb39ddd6613c2"
+    },
+    {
+      "path": "patches/@slack__web-api@7.19.0.patch",
+      "kind": "native-working-source",
+      "sha256": "02f65cd6a31528e1a1fa3731b9ada482fe25891596e62117b32940c36a44a405"
+    },
+    {
+      "path": "patches/chat@4.39.0.patch",
+      "kind": "native-working-source",
+      "sha256": "91d3b80c6af3aa4434328fec73a0eeea31858919dbde2e79c991ab2ff09ef4e2"
+    },
+    {
+      "path": "patches/discord.js@14.27.0.patch",
+      "kind": "native-working-source",
+      "sha256": "139b804505e6afd66b0ef02ec9c9ac02ef212b90c9530834c2eb52075bcf5e74"
+    },
+    {
+      "path": "patches/nice-grpc@2.1.17.patch",
+      "kind": "native-working-source",
+      "sha256": "b1e0c22f68ebc169b74ac8856d063e8fa90eeaae5874e55f4e52c9589e292058"
+    },
+    {
+      "path": "server/src/__tests__/agents-capacity-models.test.ts",
+      "kind": "native-working-source",
+      "sha256": "44e29ca83998ccd172c2440a8618028847f712244f425c91b804952fd0b943a4"
+    },
+    {
+      "path": "server/src/__tests__/ai-connections.test.ts",
+      "kind": "native-working-source",
+      "sha256": "6e8a8f1d42d5957a0d4e4f18f80ed8ec749f579d9ffd1c3105de760d6ca778c3"
+    },
+    {
+      "path": "server/src/__tests__/ai-credential-use-context.test.ts",
+      "kind": "native-working-source",
+      "sha256": "603f6e8c30fcc068183557f7c4c0e16e4853a3ebfb94d5aafa101c37366145c5"
+    },
+    {
+      "path": "server/src/__tests__/company-quota-windows.test.ts",
+      "kind": "native-working-source",
+      "sha256": "6bbfbeb6be8c3cb6561c3e1358eacc56fd7adc304e6a6475519f0cbf1c9fe40f"
+    },
+    {
+      "path": "server/src/__tests__/execution-admission-bootstrap.test.ts",
+      "kind": "native-working-source",
+      "sha256": "c58a574b556b4a286591637fe15a2bb4133d73a2fea3bebeee6f906d0169bb60"
+    },
+    {
+      "path": "server/src/__tests__/execution-admission.test.ts",
+      "kind": "native-working-source",
+      "sha256": "2675fceceea6dc7ce58ba05e2fad98132bd3bffe4dd20d330a4c1a961c71802a"
+    },
+    {
+      "path": "server/src/__tests__/execution-capacity-recovery.test.ts",
+      "kind": "native-working-source",
+      "sha256": "92d2daffed4b0d8c471ea5c0d5ae2b6b56669f54483317c0b4e962cfac23f31a"
+    },
+    {
+      "path": "server/src/__tests__/execution-legacy-reconciliation.test.ts",
+      "kind": "native-working-source",
+      "sha256": "bd2e69006f90364e699b09af773885e3cd034342b385695db959f4c5b85326d8"
+    },
+    {
+      "path": "server/src/__tests__/fixtures/protected-launch-native-fixture.ts",
+      "kind": "native-working-source",
+      "sha256": "3bbcc0cf8ed9b50172909c5cfb93f6678bb64f465f902fe8aeb8ed1bd8a8234f"
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-queued-run-claim-isolation.test.ts",
+      "kind": "native-working-source",
+      "sha256": "14aa297736b87c3ac5c7d41374a5a83cc291204dcd2cb721f6d173cee9cf4159"
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-stale-queue-invalidation.test.ts",
+      "kind": "native-working-source",
+      "sha256": "62cdd9259079f86efee554f00f98fbff9e9ead2bc13f0d57228e067a13fc8937"
+    },
+    {
+      "path": "server/src/__tests__/idle-local-work.test.ts",
+      "kind": "native-working-source",
+      "sha256": "7b1c4ec4e5d37fb1e0d549f1078981bdd38a193a8e1063c1c2167debbcd15364"
+    },
+    {
+      "path": "server/src/__tests__/legacy-evidence-bridge.test.ts",
+      "kind": "native-working-source",
+      "sha256": "9adae425bc1a67b3f628b8f4ba183052eca509723f21b640607f4772c8ad607f"
+    },
+    {
+      "path": "server/src/__tests__/protected-execution-journal.test.ts",
+      "kind": "native-working-source",
+      "sha256": "22ec81fc7a64e4c2f09dd8557d361b8978274d325106985c8b498d6ce8f4f7e6"
+    },
+    {
+      "path": "server/src/__tests__/protected-execution-transport.test.ts",
+      "kind": "native-working-source",
+      "sha256": "47f70ccfeaaf907fa129bfda69fde5dbaf74893b5d0d42322ae6a4cd6933aee0"
+    },
+    {
+      "path": "server/src/__tests__/protected-stdin-authority-client.test.ts",
+      "kind": "native-working-source",
+      "sha256": "bc4249ae9d7da025b770261be38e499e6512de5c39dbdc4fee2925d5e41a29d0"
+    },
+    {
+      "path": "server/src/__tests__/secrets-service.test.ts",
+      "kind": "native-working-source",
+      "sha256": "d2f90c9428061620f2999e6d446fda3b22e384a8d8a34103dc9c49ac38c5c5b6"
+    },
+    {
+      "path": "server/src/__tests__/slack-development-manager.test.ts",
+      "kind": "native-working-source",
+      "sha256": "016b977390910b58ea583eee86da9435e8bba08a512b5c5b0a8a9b14022e7211"
+    },
+    {
+      "path": "server/src/__tests__/subscription-refresh.test.ts",
+      "kind": "native-working-source",
+      "sha256": "f5573bed9c0ac95e18bce561483497d87614e70ffd3e076974d06fa06b529957"
+    },
+    {
+      "path": "server/src/adapters/utils.ts",
+      "kind": "native-working-source",
+      "sha256": "ba7e012097047b6d02acf092b47caf5181e8b4749362229628baccfc99c47046"
+    },
+    {
+      "path": "server/src/index.ts",
+      "kind": "native-working-source",
+      "sha256": "278b1ecb3a66ec05ecb518946b0932153d07f05c14b324a7794779566832f8df"
+    },
+    {
+      "path": "server/src/routes/agents.ts",
+      "kind": "native-working-source",
+      "sha256": "647e7b9338902abe5f7ea072a7b44fe91e3fca89a0f9f223d68d495f5d89d447"
+    },
+    {
+      "path": "server/src/secrets/local-encrypted-provider.test.ts",
+      "kind": "native-working-source",
+      "sha256": "9d178af917b6ad1a2fccb8d085e418fc3613be433f4e966734f85ea4773835ff"
+    },
+    {
+      "path": "server/src/secrets/local-encrypted-provider.ts",
+      "kind": "native-working-source",
+      "sha256": "f6a818adb852c9426d3cf0a7793a629ae88b8dea3cc86f5e306958308bca4273"
+    },
+    {
+      "path": "server/src/services/__tests__/quota-secret-mutation-recovery.test.ts",
+      "kind": "native-working-source",
+      "sha256": "d750d2177f58176c927dd88fdbdc7aab9854430c451b7322f36b98b0550d89f9"
+    },
+    {
+      "path": "server/src/services/agent-environment-test.ts",
+      "kind": "native-working-source",
+      "sha256": "6eb607e255ee88c15145110f3aab0daefbe2a3b8f286ffdbd09fee0aad5d447d"
+    },
+    {
+      "path": "server/src/services/agent-execution-stop.ts",
+      "kind": "native-working-source",
+      "sha256": "2c759b366f1ea641f0e8980982c9d48244a8cc2370bcca73f8e38f5eceb0c3f6"
+    },
+    {
+      "path": "server/src/services/agent-harness-verification.ts",
+      "kind": "native-working-source",
+      "sha256": "b714572fd3c84e262352b1d9a4071780cc0e902b86de31d09e6576b40d1d34ef"
+    },
+    {
+      "path": "server/src/services/ai-connection-runtime.ts",
+      "kind": "native-working-source",
+      "sha256": "ad51d39f7f8180e08d3b645cdac575c5a225da513ca62850cf3354d9edefa72d"
+    },
+    {
+      "path": "server/src/services/ai-connections.ts",
+      "kind": "native-working-source",
+      "sha256": "159db163cb5a2e328ad47b3f4653290741bf5a1668219677af4deb4bf125b911"
+    },
+    {
+      "path": "server/src/services/ai-credential-use-context.ts",
+      "kind": "native-working-source",
+      "sha256": "0d3194502a70f1b3d96a63d79202563739b416cb3c84197728cacbf646df168b"
+    },
+    {
+      "path": "server/src/services/chat-channels.ts",
+      "kind": "native-working-source",
+      "sha256": "fd420b3bff428ae7a481bded9525166d5a18bd91fd9486e0076c1516283f628d"
+    },
+    {
+      "path": "server/src/services/chat-channels/configuration.ts",
+      "kind": "native-working-source",
+      "sha256": "776caaca4cb1c4dbf0252edab8ea52b761ee4de2939fcc0e8a74f53c242d431e"
+    },
+    {
+      "path": "server/src/services/chat-channels/runtime-types.ts",
+      "kind": "native-working-source",
+      "sha256": "119bb69da89b307a6dfef3e323037b663456db294de9dfbaef135c31229051a6"
+    },
+    {
+      "path": "server/src/services/chat-channels/runtime/ownership.test.ts",
+      "kind": "native-working-source",
+      "sha256": "82ffd4f6c56a0a22697779c7e7541783c8a5af80aca186459dbccfc022a886a9"
+    },
+    {
+      "path": "server/src/services/chat-channels/runtime/ownership.ts",
+      "kind": "native-working-source",
+      "sha256": "4bb08dff4979237a7e6623cad3f6054468f478367b3ba326bab17fd80055dee0"
+    },
+    {
+      "path": "server/src/services/chat-channels/slack-credential-authority.ts",
+      "kind": "native-working-source",
+      "sha256": "36fa7f8a618f893ebd429768169ea1bd81e34c6fa1d834203db78a59a48a5408"
+    },
+    {
+      "path": "server/src/services/chat-channels/slack-recovery-new-use.test.ts",
+      "kind": "native-working-source",
+      "sha256": "76786ff18914bdbdfbc838448a4469577cbbf89c90ca05636e2df4dc1ec7cf78"
+    },
+    {
+      "path": "server/src/services/chat-channels/slack-runtime-authority.test.ts",
+      "kind": "native-working-source",
+      "sha256": "07b2f550a4470d6f48a9fca1817ac9e1ceb88730013ff717f9ff35f3e2f75eec"
+    },
+    {
+      "path": "server/src/services/chat-discord-gateway-cleanup.test.ts",
+      "kind": "native-working-source",
+      "sha256": "efb4039993d05ecdec81cd25e4c84287f32ea13e81338e401a432375aec9314a"
+    },
+    {
+      "path": "server/src/services/chat-discord-native-command.test.ts",
+      "kind": "native-working-source",
+      "sha256": "0df124ca2f0e8aa5603d468411aabfda56dbd44e0e816732005ecb92b654d6bd"
+    },
+    {
+      "path": "server/src/services/chat-runtime.ts",
+      "kind": "native-working-source",
+      "sha256": "0500b22e7f257f97c29993c3d637cf15f6308908a8502ec6b3885f741f770e0c"
+    },
+    {
+      "path": "server/src/services/chat-sdk-callback-drain.test.ts",
+      "kind": "native-working-source",
+      "sha256": "1186de4d2b40d286575b3a860a547eaff91943b5de50f70be7f2ada719e2e012"
+    },
+    {
+      "path": "server/src/services/chat-sdk-runtime.test.ts",
+      "kind": "native-working-source",
+      "sha256": "1114164ebf95c953c692b4d20732134f1ec2134db5961478614a7a6ae7e2c2ef"
+    },
+    {
+      "path": "server/src/services/chat-sdk-runtime.ts",
+      "kind": "native-working-source",
+      "sha256": "de28e26a834f909dc3f01e2728e80ce5a8fb7ddb007530d453963169918f6091"
+    },
+    {
+      "path": "server/src/services/chat-sdk-shutdown.test.ts",
+      "kind": "native-working-source",
+      "sha256": "28cb7bd09dbbef892afc3e3ffb44867c671fe07851df80a74c61d26a49e27af2"
+    },
+    {
+      "path": "server/src/services/chat-slack-registration-cleanup.test.ts",
+      "kind": "native-working-source",
+      "sha256": "25428942f0a2038ff5793a2e9dbb439a604df5fe1d25a65914830395de0256f9"
+    },
+    {
+      "path": "server/src/services/chat-slack-registration-cleanup.ts",
+      "kind": "native-working-source",
+      "sha256": "1c4c2c56820145ab341d90ffbeed3e13595e02ef5d4009e819432db579dccc72"
+    },
+    {
+      "path": "server/src/services/connector-recovery-authority.ts",
+      "kind": "native-working-source",
+      "sha256": "cc4ca001ced7d96f6788fac534b07d03a2147dacdfc340c82f35835e7cc16342"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/completion-recovery.test.ts",
+      "kind": "native-working-source",
+      "sha256": "03b18a7095dae818b95bbb858642ce3ec1c683f6d0bbc6ac1fb39d5c94d2c9bd"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/completion.ts",
+      "kind": "native-working-source",
+      "sha256": "02f302f0e0e544dacf22b5651ee863e9cf7be3817a0857c399ddc01c19969220"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/customer-owned.ts",
+      "kind": "native-working-source",
+      "sha256": "df0a1e6d6e04f4e5818a618011a8e7e9bf323138654001079d2f65bb36321ac3"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/development-manager.ts",
+      "kind": "native-working-source",
+      "sha256": "ed8270183b1e3e6d30467586890969f9fd0cf786cb0fb63f45313e2de4ede2a5"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/install-recovery.test.ts",
+      "kind": "native-working-source",
+      "sha256": "ed77a4ee8cec21cae660f8f02f3b0d889860a6663fdd6744122a0af9bf2ee3f0"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/install-recovery.ts",
+      "kind": "native-working-source",
+      "sha256": "e6a4c7b2fff6553d66a367a0fb7f4b71d09e77cb292db78b12507ab5cc9f88aa"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/managed-install-integration.test.ts",
+      "kind": "native-working-source",
+      "sha256": "500da2fd7db231897d3fc2a952f2a966f834b22d2fa26a2eca37038e5e7ffd5e"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/managed-install-recovery.test.ts",
+      "kind": "native-working-source",
+      "sha256": "4ed3f5e3f4244da1062d8ab0006777da2af12783900492ec522c7ed318ba9a24"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/managed-install-recovery.ts",
+      "kind": "native-working-source",
+      "sha256": "f8cdbab903ef3115180e2126425360e052aa2ecd9bfdb2b245462b80c6502474"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/managed.ts",
+      "kind": "native-working-source",
+      "sha256": "e9a6b6dfd5b177580e4683af2ab740a8e4c0872a2d7f1492c06da496a06f9d2f"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/manager-claim-recovery.test.ts",
+      "kind": "native-working-source",
+      "sha256": "c2a4603b64aa9ecde57fbc889a85563ceb3febc7c7912b4f40f8f28319eda2bc"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/manager-claim-recovery.ts",
+      "kind": "native-working-source",
+      "sha256": "9d60b59b3bfb0816a21bc427245a95e6aa1b7511016e8686cd7862efb539221d"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/manager-grants-claim-recovery.test.ts",
+      "kind": "native-working-source",
+      "sha256": "551b4e0799df63e48d55f739a69d41395bf008ef146082c6718419d2b06c76f5"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/manager-grants-refresh-recovery.test.ts",
+      "kind": "native-working-source",
+      "sha256": "e566ab030d21c2d18260441b4e1295f16e158e15533fb84f54bcd465f5c907aa"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/manager-grants-revocation.test.ts",
+      "kind": "native-working-source",
+      "sha256": "dc8fd7c3dae144563326c4600c286af9e7e688f350513f685b27c08e32499a2d"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/manager-grants-revoke-journal.test.ts",
+      "kind": "native-working-source",
+      "sha256": "a419e600e64bfecc78d6ae3a5c41d9c8733e455b75c29be22a47259face4af92"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/manager-grants.ts",
+      "kind": "native-working-source",
+      "sha256": "716fddb93eb9f9cfa52cf464c49a2835e25001b38c2e6b8b43a1d6fd448dc3fc"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/manager-refresh-recovery.test.ts",
+      "kind": "native-working-source",
+      "sha256": "ec3d60194cd596f226ad84bbc703f57dae0677be9bda830da048ccb3450d87d9"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/manager-refresh-recovery.ts",
+      "kind": "native-working-source",
+      "sha256": "ae6d68f97756592699121afdf0c2384a75abc8606d3e4e5cb989ec5c73f2dbb1"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/manager-revoke-recovery.test.ts",
+      "kind": "native-working-source",
+      "sha256": "e54435d51f952c7c3c4d5468a34edaf089f336e1f8282035605e8dabe57108aa"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/manager-revoke-recovery.ts",
+      "kind": "native-working-source",
+      "sha256": "76c18b52fd3188f2c9e0afc9e295a052c9727b2117894422f49cbeb491d0de2d"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/new-use-guard.test.ts",
+      "kind": "native-working-source",
+      "sha256": "5419f9576a91d090301794a659693b600b3ce15ffe1c4abb5d55e3e8ad398b78"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/new-use-guard.ts",
+      "kind": "native-working-source",
+      "sha256": "aa550b29ce5938a11cc5ef07869c9a125b1a2ec88cf55b4077d8090b5c4be4fa"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/provider-client.test.ts",
+      "kind": "native-working-source",
+      "sha256": "b28083e94e7df5690cdf5ea93cee8a059c2a115ac367cecdeecb076fadc9e1bd"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/provider-client.ts",
+      "kind": "native-working-source",
+      "sha256": "98c464f0b5cad8cd71cc5812d3c46034cc47a0955533f4fc1476f91239811979"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/registration-cleanup-integration.test.ts",
+      "kind": "native-working-source",
+      "sha256": "9283d52f24a1ecc0d873d7499b83904bd7249ae9d27496c26f68cc40701a1f42"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/registration-cleanup-recovery.test.ts",
+      "kind": "native-working-source",
+      "sha256": "803fd444c392f560f56b58215ee62fee7e6d611300ff4b52d21c2bab950d95a1"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/registration-cleanup-recovery.ts",
+      "kind": "native-working-source",
+      "sha256": "90d6f1d0199a2c6f3b0a7970ae9b68330185d5417c20c8c79dabfa9774aac42b"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/registration.ts",
+      "kind": "native-working-source",
+      "sha256": "864425d8e8bc7209569e1484f3a9a57d334774dd523f70b48a72f1458cb77923"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/service-recovery.test.ts",
+      "kind": "native-working-source",
+      "sha256": "56da431bb08bbb1b353b8b01f1d42f8d0ac5356436d8c7e6a67d7ee095d3ea5f"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/service.ts",
+      "kind": "native-working-source",
+      "sha256": "11acf2246f5e5af45b6e656db1762664be5d10ed07e593a1ea22756b373c5c5d"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/setup-message-integration.test.ts",
+      "kind": "native-working-source",
+      "sha256": "dbb9a5ea8e14dade2eba1cdd25fcf27d4d8c4043811b8593ad64266ab9b754bc"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/setup-message-recovery.test.ts",
+      "kind": "native-working-source",
+      "sha256": "f310c0fc8d2d50d628199e13289f67131425c6c9744008b0488629c7edc219e5"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/setup-message-recovery.ts",
+      "kind": "native-working-source",
+      "sha256": "ee5e3763d7943e9e4715e155ada0f296374cc870d891d31aa71547533511b659"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/staged-cleanup-integration.test.ts",
+      "kind": "native-working-source",
+      "sha256": "851573b7f7fba90087b036cd26dba5d225dbc5bf875c6eb31b12d53044d5508e"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/staged-cleanup-recovery.test.ts",
+      "kind": "native-working-source",
+      "sha256": "5463e3a4a3dcffaa204196c7503b18e6b1dc068ad2621bfacc71c2a5e8bc729f"
+    },
+    {
+      "path": "server/src/services/connectors/slack/setup/staged-cleanup-recovery.ts",
+      "kind": "native-working-source",
+      "sha256": "6e2823a954836b98b505516f1be7d0f494b60dcbeacb3b0a07fea2eabcb83bb9"
+    },
+    {
+      "path": "server/src/services/credential-recovery-definition-guard.ts",
+      "kind": "native-working-source",
+      "sha256": "f2902a26b5826af57697112a631d6a4840899778bc463127bf7aaeb4efc5b24f"
+    },
+    {
+      "path": "server/src/services/environment-probe.ts",
+      "kind": "native-working-source",
+      "sha256": "57ad58c4b4e47d3fdb03328ce39826045bc0cb56de8e1939b973808875a27af4"
+    },
+    {
+      "path": "server/src/services/environment-runtime.ts",
+      "kind": "native-working-source",
+      "sha256": "d2945a139b04d3c49393e766f3ec5ff767cb3481faa8cdf09946136cd1fbc3b8"
+    },
+    {
+      "path": "server/src/services/environments.ts",
+      "kind": "native-working-source",
+      "sha256": "3fa9a4428f8032575e65f125f6f51f797837bb65d8acb17a4510abe160a7c5a8"
+    },
+    {
+      "path": "server/src/services/execution-admission-bootstrap.ts",
+      "kind": "native-working-source",
+      "sha256": "be5af301bff437f628144ab3abd7ef50406abae3506ea03af0466dbcc5daf827"
+    },
+    {
+      "path": "server/src/services/execution-admission-operations.ts",
+      "kind": "native-working-source",
+      "sha256": "1052150c104c9a27ae13e994871970ce0a7c4b91a6994b35f52fe779c36eb727"
+    },
+    {
+      "path": "server/src/services/execution-admission.ts",
+      "kind": "native-working-source",
+      "sha256": "cce8585b2ab76c9b51352cb9686ad6431343c7af935e13c3d52e95ecd439ba86"
+    },
+    {
+      "path": "server/src/services/execution-capacity-context.ts",
+      "kind": "native-working-source",
+      "sha256": "49a2e387e44c89655bfe0e6cecd02e0a1a306891708a10169833468382394d40"
+    },
+    {
+      "path": "server/src/services/execution-capacity-lifetime.ts",
+      "kind": "native-working-source",
+      "sha256": "82ed44b5a9bafbea85437d2ab24cc1cf28ddec5c36ee29807231d097c8d188e1"
+    },
+    {
+      "path": "server/src/services/execution-capacity-policy.ts",
+      "kind": "native-working-source",
+      "sha256": "26bea37523d547f457772c39ec2356f569026aeeb5fc0882b30fa6702ee049da"
+    },
+    {
+      "path": "server/src/services/execution-legacy-reconciliation.ts",
+      "kind": "native-working-source",
+      "sha256": "65451247440edcdb641adfbd7114a36bd4abc154027b3c21164b1f588cb21560"
+    },
+    {
+      "path": "server/src/services/heartbeat.ts",
+      "kind": "native-working-source",
+      "sha256": "1ac68e1bed5ec287f4e1fcffde5163d606b9d2112d4cedb7351be762ed3907ef"
+    },
+    {
+      "path": "server/src/services/heartbeat/execution-configuration.ts",
+      "kind": "native-working-source",
+      "sha256": "c58d49956f49d018f458a05648c0f00e82a6eadd1c5205974194ec23240dcd6d"
+    },
+    {
+      "path": "server/src/services/heartbeat/queue.test.ts",
+      "kind": "native-working-source",
+      "sha256": "ec838e4e7ed3507efe340ebb1ebcd289b9e1702a6c10026e86e955053552d5af"
+    },
+    {
+      "path": "server/src/services/heartbeat/queue.ts",
+      "kind": "native-working-source",
+      "sha256": "71507152b295ff71b9de0418a598c9ff877e3e5ad5eabeacc07aa29356048479"
+    },
+    {
+      "path": "server/src/services/heartbeat/run-control.test.ts",
+      "kind": "native-working-source",
+      "sha256": "688918b8fe9590ac065da865e4824731c369099e4a7329e6d37455c9f8c4158e"
+    },
+    {
+      "path": "server/src/services/heartbeat/run-control.ts",
+      "kind": "native-working-source",
+      "sha256": "d4b351245a912bd29c83e143405fe778ebfc5ac66950ab1d94e9f96823d98a5a"
+    },
+    {
+      "path": "server/src/services/heartbeat/runtime-execution.test.ts",
+      "kind": "native-working-source",
+      "sha256": "f8ab774ba5420968dda21b3ca319f36da1afeacc08dd363c973e47af1823604f"
+    },
+    {
+      "path": "server/src/services/heartbeat/runtime-execution.ts",
+      "kind": "native-working-source",
+      "sha256": "8e6eb5a8eb55696e9134658041bb3bb5cec033fca728204c263c84e3bcbef83d"
+    },
+    {
+      "path": "server/src/services/heartbeat/ssh-lease-stop.test.ts",
+      "kind": "native-working-source",
+      "sha256": "0167d7eb01befbf4daa936c10f2df4264c253a4767c447ce027495fcb1b70604"
+    },
+    {
+      "path": "server/src/services/heartbeat/ssh-lease-stop.ts",
+      "kind": "native-working-source",
+      "sha256": "b9656c1ed35a6153c0ca7deb32ece1e63b94ead23037de38c3fd8c777d161ab1"
+    },
+    {
+      "path": "server/src/services/heartbeat/workspace-preparation.ts",
+      "kind": "native-working-source",
+      "sha256": "9d58b5f6d0c66a5d218da855ee4fa719eb58ed3bcb03767c7daa60bb9f86dd76"
+    },
+    {
+      "path": "server/src/services/idle-local-work.ts",
+      "kind": "native-working-source",
+      "sha256": "27e094da29c6ae388db843a6b10e163d3aeb8e02c61ae97ba7d20fd5f4acb60a"
+    },
+    {
+      "path": "server/src/services/legacy-evidence-bridge.ts",
+      "kind": "native-working-source",
+      "sha256": "22f6a6eebeb6bef83b7e8801dbf95628d5ac806df958824c3c92c40c5d1de0fe"
+    },
+    {
+      "path": "server/src/services/paperclip-cloud-connector.test.ts",
+      "kind": "native-working-source",
+      "sha256": "f92bcc5edd88ed192437c227981e8106fce6482ef5e0fa9610bf4be22e8241be"
+    },
+    {
+      "path": "server/src/services/paperclip-cloud-connector.ts",
+      "kind": "native-working-source",
+      "sha256": "4212019fa275488115a7f16995fa9ec2844e9c4e78b8bacb64cf44ab5ca14168"
+    },
+    {
+      "path": "server/src/services/photon/adapter-disconnect.test.ts",
+      "kind": "native-working-source",
+      "sha256": "62bc68526b43128f465476b025ca1ec381ba0691e5f9e44cfc0766aefee08dd4"
+    },
+    {
+      "path": "server/src/services/photon/adapter.ts",
+      "kind": "native-working-source",
+      "sha256": "7c269ddf6852c283978b88b0821df011e1a72df0d877d9421862d2a114f03aa1"
+    },
+    {
+      "path": "server/src/services/photon/nice-grpc-cancellation.test.ts",
+      "kind": "native-working-source",
+      "sha256": "389863cd22a318f2cf298a9db562381a884eac7f7991eaf9acf3eac1d434db7b"
+    },
+    {
+      "path": "server/src/services/photon/receiver.test.ts",
+      "kind": "native-working-source",
+      "sha256": "2828a663602fbd4f74924d3a6412cf8ab8d00e68b4b06274f246ceab0b1e14c4"
+    },
+    {
+      "path": "server/src/services/photon/receiver.ts",
+      "kind": "native-working-source",
+      "sha256": "dc2572d8675933bf82df8055681d93d06aeb828e6e1b45a9bb7ad65461826f8e"
+    },
+    {
+      "path": "server/src/services/photon/recovery-transport-options.test.ts",
+      "kind": "native-working-source",
+      "sha256": "8d5b486b2657626b4f53634e03f57e5b124c805124aba239aa10e3287b753959"
+    },
+    {
+      "path": "server/src/services/photon/recovery-transport.ts",
+      "kind": "native-working-source",
+      "sha256": "2eaef74b72ac3197a513cf32fd11c426b2c1cfb8f468371a740861aa9a627648"
+    },
+    {
+      "path": "server/src/services/photon/typed-event-stream-cleanup.test.ts",
+      "kind": "native-working-source",
+      "sha256": "089dfda78c67f3ba513794e919e9cd2ccd34eff76da6025ba34495704b6f11d5"
+    },
+    {
+      "path": "server/src/services/protected-execution-journal.ts",
+      "kind": "native-working-source",
+      "sha256": "814c33a2371bb0fc51a1d9a4fad22b6952f5dcfc9831f2a6aa100e77e67182a6"
+    },
+    {
+      "path": "server/src/services/protected-execution-transport.ts",
+      "kind": "native-working-source",
+      "sha256": "6c6c0f96313dcce133560d4e23cced4b62e77d70114e6c45e0a5160d2eba92ea"
+    },
+    {
+      "path": "server/src/services/protected-stdin-authority-client.ts",
+      "kind": "native-working-source",
+      "sha256": "0d8364228a05998b8ba1fcbcb81bc70f60512a663f84bdff0d4fde2390122d2b"
+    },
+    {
+      "path": "server/src/services/quota-credential-exchange.test.ts",
+      "kind": "native-working-source",
+      "sha256": "8767658d57fdad1304a6bff21af18050cee5eec5c8e1b18dda9f5f8a30293564"
+    },
+    {
+      "path": "server/src/services/quota-credential-exchange.ts",
+      "kind": "native-working-source",
+      "sha256": "f1e6c32d641c4b149cab167c9b8a268889027165096fdcd6ca9aa7a73e32fa90"
+    },
+    {
+      "path": "server/src/services/quota-credential-recovery.test.ts",
+      "kind": "native-working-source",
+      "sha256": "a4b68f9f68b0c2edaf27477c576ba558709487f5d9d49b49b514617e896d80cd"
+    },
+    {
+      "path": "server/src/services/quota-credential-recovery.ts",
+      "kind": "native-working-source",
+      "sha256": "656db648ba38806f31e6f06091121424ca90608b31d49a48c0387790ac73e27d"
+    },
+    {
+      "path": "server/src/services/quota-owner-identity-schema.ts",
+      "kind": "native-working-source",
+      "sha256": "1f5ce36feff5daaae2483470af72131e21e671a76c2508895d7e4ced8b8d2559"
+    },
+    {
+      "path": "server/src/services/quota-owner-identity.ts",
+      "kind": "native-working-source",
+      "sha256": "35ad8ec056c44e1dd5bbd6f8d5befadbc6469f99613a4d59fd7b453065a0410f"
+    },
+    {
+      "path": "server/src/services/quota-windows.ts",
+      "kind": "native-working-source",
+      "sha256": "b622bde68e4c0e438f59fb8d2e1952df47c95333c35eddbb479454588f0bb4a8"
+    },
+    {
+      "path": "server/src/services/secret-recovery-identity-schema.ts",
+      "kind": "native-working-source",
+      "sha256": "bb63ef89097035638634a420420a13babc37dee22a2ac766afc56a8d56a77182"
+    },
+    {
+      "path": "server/src/services/secret-recovery-identity.ts",
+      "kind": "native-working-source",
+      "sha256": "cc52422eb6d6c4203d1035da91ab0e6b33e524aec2b3bca3d7ba50ec7ed38149"
+    },
+    {
+      "path": "server/src/services/secrets.ts",
+      "kind": "native-working-source",
+      "sha256": "24dea636840cb542f6a6c9455789ad7c286e257fbe50940189c5c26966f4f2e7"
+    },
+    {
+      "path": "server/src/services/slack-upload-task-join.test.ts",
+      "kind": "native-working-source",
+      "sha256": "3ce94563dea470b44c29197c23e4b4f378324b118bde663c3ea21ddbbfc1706b"
+    },
+    {
+      "path": "server/src/services/subscription-refresh.ts",
+      "kind": "native-working-source",
+      "sha256": "a5ffae9ae3f387134e36a5901d61aacce578e9b8e1143c61e36d7d97e7abab3b"
+    },
+    {
+      "path": "server/src/services/teams-msal-http.test.ts",
+      "kind": "native-working-source",
+      "sha256": "09d38403c46aba5708d270481dd3fce563136ab2994de38ace573134fc355844"
+    }
+  ],
+  "relocations": [
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/candidates.json",
+      "forkPath": "integrations/kubernetes/images/candidates.json",
+      "sha256": "cfc4b4c39429f273e712f2e0b40a649ec528f4d4f842a24fe2b76702238305ea",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/SSH-LEASE-STOP.md",
+      "forkPath": "integrations/kubernetes/images/controller/SSH-LEASE-STOP.md",
+      "sha256": "75a65cab6e1a1742f15a3877059e654b70f11bba843396b4ad3d97aeb516fc89",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/README.md",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/README.md",
+      "sha256": "926af503887bdf0555240385446c7a1533e067630c291c6acad0fc38deb107bc",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/manifest.json",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/manifest.json",
+      "sha256": "1d07f74fc03a0ee0bc3cf3e051c7aa091583f6c1e229e710c82a2d8a1c08472f",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/adapter-utils/src/command-managed-runtime.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/adapter-utils/src/command-managed-runtime.ts",
+      "sha256": "a51d1e3cd3c7c14ae6e751e15d32bc76879cc83f8f320b6bc043a4194a043deb",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/adapter-utils/src/execution-state-journal.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/adapter-utils/src/execution-state-journal.ts",
+      "sha256": "94af6b00a3ded501008bd04668c22d55c5b812f3f947cbd66fc84760184c5515",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/adapter-utils/src/remote-managed-runtime.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/adapter-utils/src/remote-managed-runtime.ts",
+      "sha256": "d20b701e2db9f9fc32dcba70bdbcba3d6098e35199428bac0962f4ee229210ab",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/adapter-utils/src/sandbox-callback-bridge.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/adapter-utils/src/sandbox-callback-bridge.ts",
+      "sha256": "aac0948aec9aabd359f4933c0607a512ef6c3ef886423b6c63e558b4d0fdb5a6",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/adapter-utils/src/sandbox-managed-runtime.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/adapter-utils/src/sandbox-managed-runtime.ts",
+      "sha256": "f0acdfa04da81b74d002ddee0ee5d56b1d5736ef2ddc8bfd6fce5d96a9019613",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/adapter-utils/src/ssh-command-managed.test.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/adapter-utils/src/ssh-command-managed.test.ts",
+      "sha256": "1e5c0df1dad7a8a5c98880fe0db751110463ea3cd5046f241d3a7ce8a6b893bf",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/adapter-utils/src/ssh.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/adapter-utils/src/ssh.ts",
+      "sha256": "a647a71bb077e43e92aa86e75d7cca930fd683c1b860dfaa4f5e1faa041a1877",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/adapter-utils/src/workspace-restore-merge.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/adapter-utils/src/workspace-restore-merge.ts",
+      "sha256": "55fe88b633a514b1c215b4af9a65b3404e0f09150c2b89f9737db8ac253e63f1",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/adapters/codex-local/src/server/codex-auth-copyback.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/adapters/codex-local/src/server/codex-auth-copyback.ts",
+      "sha256": "ee1cd9e439ec43c42a5a4b6c8c51ab5ac60f2be2e296e805bf2ef241e93d38cc",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/adapters/codex-local/src/server/codex-auth-seed-write.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/adapters/codex-local/src/server/codex-auth-seed-write.ts",
+      "sha256": "95315a6874a3c46046b1f4b6c903362c3326a3f9ae225186d6cbc4d2cdba4778",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/adapters/codex-local/src/server/execute.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/adapters/codex-local/src/server/execute.ts",
+      "sha256": "b36c94fd9eca7a4f3312026b87fc99d0f16527a87d060fe8ee02c1ef3cfe8c0b",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/adapters/codex-local/src/server/test.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/adapters/codex-local/src/server/test.ts",
+      "sha256": "68da9c57cc8b9f0c2d5e3ae2eef5a8271f5ac5434e06b2f0fbde4ce751a081ee",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/db/src/migrations/0340_execution_admission.sql",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/db/src/migrations/0340_execution_admission.sql",
+      "sha256": "714b9ed3c5e86f8f5c56ac234a05e4a57439d6008ff745caad3d55a03e71bba0",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/db/src/migrations/0341_execution_operations.sql",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/db/src/migrations/0341_execution_operations.sql",
+      "sha256": "82d98e119d0ac7af6b162dad83b5baf14c925e8b828c31ccb048ee717cd4fb4f",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/db/src/migrations/0342_execution_operations.sql",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/db/src/migrations/0342_execution_operations.sql",
+      "sha256": "e981e82200524e732c24b59416a19548ea94c7861fdd8005755ab92dd6bded5e",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/db/src/migrations/0343_execution_operations.sql",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/db/src/migrations/0343_execution_operations.sql",
+      "sha256": "c69491abba55e77beb5e2748804df2272cdd49b981ddfcb121344b0db4a1f85b",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/db/src/migrations/0344_volatile_colossus.sql",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/db/src/migrations/0344_volatile_colossus.sql",
+      "sha256": "a71b0239aa6a119d7294a100141c410ebab01d22a5f9700cbeb419bbf4bb50e7",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/db/src/migrations/0345_legacy_present_day_decisions.sql",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/db/src/migrations/0345_legacy_present_day_decisions.sql",
+      "sha256": "cfae40415fe4e929992e746070398ddd3dbbc9178eeb3bc281e7b35884f32798",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/db/src/migrations/0346_protected_authority.sql",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/db/src/migrations/0346_protected_authority.sql",
+      "sha256": "6cbce21bd17ea57782afe952cd894e42f22d3f02ff83648846b89bd8ef1ab449",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/db/src/migrations/meta/0342_snapshot.json",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/db/src/migrations/meta/0342_snapshot.json",
+      "sha256": "3baad32e842df2a8214a6cfa35a991f737579eacc875d90f0762f8a4fc979b8a",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/db/src/migrations/meta/0343_snapshot.json",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/db/src/migrations/meta/0343_snapshot.json",
+      "sha256": "cd25d062b7ed55173d0ed0644da8857deb73bb2e447c11cd3e6a0f95b2066655",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/db/src/migrations/meta/0344_snapshot.json",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/db/src/migrations/meta/0344_snapshot.json",
+      "sha256": "e606b8bdc72f6317e84c03e0a9a4b39d95ccb6b12c53a227f9859064fd360977",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/db/src/migrations/meta/0345_snapshot.json",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/db/src/migrations/meta/0345_snapshot.json",
+      "sha256": "c66a68af474cb61d44315117160943de92cd90898023d69fb2477e9073c053eb",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/db/src/migrations/meta/0346_snapshot.json",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/db/src/migrations/meta/0346_snapshot.json",
+      "sha256": "5fe7017e4b69a98af65fcfc66ab0565630965947a3a582acde935d9e2e1f8e4d",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/db/src/migrations/meta/_journal.json",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/db/src/migrations/meta/_journal.json",
+      "sha256": "d54be08c19a7bd28338412eba18b24c530d5799abd281d6b4c31740fd175d71a",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/db/src/schema/execution_admission.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/db/src/schema/execution_admission.ts",
+      "sha256": "707e3eec4bcde82405fc60851def33615e10163c4bdc3dba47d73688a7949ea2",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/packages/db/src/schema/index.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/packages/db/src/schema/index.ts",
+      "sha256": "485e36a3fc0ad0660574ab1817d3bc4d61af026dddb47f7129715681d46e75f7",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/__tests__/agents-capacity-models.test.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/__tests__/agents-capacity-models.test.ts",
+      "sha256": "44e29ca83998ccd172c2440a8618028847f712244f425c91b804952fd0b943a4",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/__tests__/execution-admission-bootstrap.test.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/__tests__/execution-admission-bootstrap.test.ts",
+      "sha256": "c58a574b556b4a286591637fe15a2bb4133d73a2fea3bebeee6f906d0169bb60",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/__tests__/execution-admission.test.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/__tests__/execution-admission.test.ts",
+      "sha256": "2675fceceea6dc7ce58ba05e2fad98132bd3bffe4dd20d330a4c1a961c71802a",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/__tests__/execution-capacity-recovery.test.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/__tests__/execution-capacity-recovery.test.ts",
+      "sha256": "92d2daffed4b0d8c471ea5c0d5ae2b6b56669f54483317c0b4e962cfac23f31a",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/__tests__/execution-legacy-reconciliation.test.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/__tests__/execution-legacy-reconciliation.test.ts",
+      "sha256": "bd2e69006f90364e699b09af773885e3cd034342b385695db959f4c5b85326d8",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/__tests__/fixtures/protected-launch-native-fixture.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/__tests__/fixtures/protected-launch-native-fixture.ts",
+      "sha256": "3bbcc0cf8ed9b50172909c5cfb93f6678bb64f465f902fe8aeb8ed1bd8a8234f",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/__tests__/heartbeat-queued-run-claim-isolation.test.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/__tests__/heartbeat-queued-run-claim-isolation.test.ts",
+      "sha256": "14aa297736b87c3ac5c7d41374a5a83cc291204dcd2cb721f6d173cee9cf4159",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/__tests__/heartbeat-stale-queue-invalidation.test.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/__tests__/heartbeat-stale-queue-invalidation.test.ts",
+      "sha256": "62cdd9259079f86efee554f00f98fbff9e9ead2bc13f0d57228e067a13fc8937",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/__tests__/legacy-evidence-bridge.test.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/__tests__/legacy-evidence-bridge.test.ts",
+      "sha256": "9adae425bc1a67b3f628b8f4ba183052eca509723f21b640607f4772c8ad607f",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/__tests__/protected-execution-journal.test.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/__tests__/protected-execution-journal.test.ts",
+      "sha256": "22ec81fc7a64e4c2f09dd8557d361b8978274d325106985c8b498d6ce8f4f7e6",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/__tests__/protected-execution-transport.test.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/__tests__/protected-execution-transport.test.ts",
+      "sha256": "47f70ccfeaaf907fa129bfda69fde5dbaf74893b5d0d42322ae6a4cd6933aee0",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/__tests__/protected-stdin-authority-client.test.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/__tests__/protected-stdin-authority-client.test.ts",
+      "sha256": "bc4249ae9d7da025b770261be38e499e6512de5c39dbdc4fee2925d5e41a29d0",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/index.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/index.ts",
+      "sha256": "278b1ecb3a66ec05ecb518946b0932153d07f05c14b324a7794779566832f8df",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/routes/agents.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/routes/agents.ts",
+      "sha256": "647e7b9338902abe5f7ea072a7b44fe91e3fca89a0f9f223d68d495f5d89d447",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/agent-environment-test.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/agent-environment-test.ts",
+      "sha256": "6eb607e255ee88c15145110f3aab0daefbe2a3b8f286ffdbd09fee0aad5d447d",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/agent-execution-stop.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/agent-execution-stop.ts",
+      "sha256": "2c759b366f1ea641f0e8980982c9d48244a8cc2370bcca73f8e38f5eceb0c3f6",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/agent-harness-verification.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/agent-harness-verification.ts",
+      "sha256": "b714572fd3c84e262352b1d9a4071780cc0e902b86de31d09e6576b40d1d34ef",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/environment-probe.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/environment-probe.ts",
+      "sha256": "57ad58c4b4e47d3fdb03328ce39826045bc0cb56de8e1939b973808875a27af4",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/environment-runtime.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/environment-runtime.ts",
+      "sha256": "d2945a139b04d3c49393e766f3ec5ff767cb3481faa8cdf09946136cd1fbc3b8",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/environments.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/environments.ts",
+      "sha256": "3fa9a4428f8032575e65f125f6f51f797837bb65d8acb17a4510abe160a7c5a8",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/execution-admission-bootstrap.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/execution-admission-bootstrap.ts",
+      "sha256": "be5af301bff437f628144ab3abd7ef50406abae3506ea03af0466dbcc5daf827",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/execution-admission-operations.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/execution-admission-operations.ts",
+      "sha256": "1052150c104c9a27ae13e994871970ce0a7c4b91a6994b35f52fe779c36eb727",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/execution-admission.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/execution-admission.ts",
+      "sha256": "cce8585b2ab76c9b51352cb9686ad6431343c7af935e13c3d52e95ecd439ba86",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/execution-capacity-context.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/execution-capacity-context.ts",
+      "sha256": "49a2e387e44c89655bfe0e6cecd02e0a1a306891708a10169833468382394d40",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/execution-capacity-lifetime.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/execution-capacity-lifetime.ts",
+      "sha256": "82ed44b5a9bafbea85437d2ab24cc1cf28ddec5c36ee29807231d097c8d188e1",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/execution-capacity-policy.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/execution-capacity-policy.ts",
+      "sha256": "26bea37523d547f457772c39ec2356f569026aeeb5fc0882b30fa6702ee049da",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/execution-legacy-reconciliation.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/execution-legacy-reconciliation.ts",
+      "sha256": "65451247440edcdb641adfbd7114a36bd4abc154027b3c21164b1f588cb21560",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/heartbeat/execution-configuration.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/heartbeat/execution-configuration.ts",
+      "sha256": "c58d49956f49d018f458a05648c0f00e82a6eadd1c5205974194ec23240dcd6d",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/heartbeat/queue.test.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/heartbeat/queue.test.ts",
+      "sha256": "ec838e4e7ed3507efe340ebb1ebcd289b9e1702a6c10026e86e955053552d5af",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/heartbeat/queue.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/heartbeat/queue.ts",
+      "sha256": "71507152b295ff71b9de0418a598c9ff877e3e5ad5eabeacc07aa29356048479",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/heartbeat/run-control.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/heartbeat/run-control.ts",
+      "sha256": "d4b351245a912bd29c83e143405fe778ebfc5ac66950ab1d94e9f96823d98a5a",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/heartbeat/workspace-preparation.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/heartbeat/workspace-preparation.ts",
+      "sha256": "9d58b5f6d0c66a5d218da855ee4fa719eb58ed3bcb03767c7daa60bb9f86dd76",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/heartbeat.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/heartbeat.ts",
+      "sha256": "1ac68e1bed5ec287f4e1fcffde5163d606b9d2112d4cedb7351be762ed3907ef",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/legacy-evidence-bridge.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/legacy-evidence-bridge.ts",
+      "sha256": "22f6a6eebeb6bef83b7e8801dbf95628d5ac806df958824c3c92c40c5d1de0fe",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/protected-execution-journal.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/protected-execution-journal.ts",
+      "sha256": "814c33a2371bb0fc51a1d9a4fad22b6952f5dcfc9831f2a6aa100e77e67182a6",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/protected-execution-transport.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/protected-execution-transport.ts",
+      "sha256": "6c6c0f96313dcce133560d4e23cced4b62e77d70114e6c45e0a5160d2eba92ea",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/admission-native/source/server/src/services/protected-stdin-authority-client.ts",
+      "forkPath": "integrations/kubernetes/images/controller/admission-native/source/server/src/services/protected-stdin-authority-client.ts",
+      "sha256": "0d8364228a05998b8ba1fcbcb81bc70f60512a663f84bdff0d4fde2390122d2b",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/deny-local.sh",
+      "forkPath": "integrations/kubernetes/images/controller/deny-local.sh",
+      "sha256": "92a70468675a7b8357837076eb9bf4d4e7b9c15b55bbbadbfd71193443a9df36",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/healthcheck.mjs",
+      "forkPath": "integrations/kubernetes/images/controller/healthcheck.mjs",
+      "sha256": "f5eb90b6bdd5207613d2ae91e405dc2a3c22f75039dc2e5a3f5865b6df6ce75f",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/pnpm-lock.yaml",
+      "forkPath": "integrations/kubernetes/images/controller/pnpm-lock.yaml",
+      "sha256": "f4158d881915c767040519545a6538391d59282ac6bf5b15c3e784767ce220de",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/ssh-admission/Dockerfile.runner-test",
+      "forkPath": "integrations/kubernetes/images/controller/ssh-admission/Dockerfile.runner-test",
+      "sha256": "c3af038e7cd3c978fc743705fd449077c687d187b29899e067812b7861f4542b",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/ssh-admission/Dockerfile.test",
+      "forkPath": "integrations/kubernetes/images/controller/ssh-admission/Dockerfile.test",
+      "sha256": "626655a71d9c7af71ed6aa5c2385957ff6165a79eb17cc4eae4201fe4fbcbae0",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/ssh-admission/README.md",
+      "forkPath": "integrations/kubernetes/images/controller/ssh-admission/README.md",
+      "sha256": "b6d2a26a9ca39d418d218e31af7e0dfad3f30280798a29941d647637f43c9079",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/ssh-admission/__pycache__/assemble.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/images/controller/ssh-admission/__pycache__/assemble.cpython-314.pyc",
+      "sha256": "92cd4e5e677825988b322a3a9450e564ddb5574bd81c343cfef69c24fd59d5ca",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/ssh-admission/assemble.py",
+      "forkPath": "integrations/kubernetes/images/controller/ssh-admission/assemble.py",
+      "sha256": "1701a454ff579e12ae0a741460d967d6ab94c4971af657f191fa3a69ab43dfa7",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/ssh-admission/commands-manifest.json",
+      "forkPath": "integrations/kubernetes/images/controller/ssh-admission/commands-manifest.json",
+      "sha256": "1bcdee0ed9a4e14c5f698dd1ab07d26bc88451fb97cf6e1224d041207cae1f6c",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/ssh-admission/protocol.py",
+      "forkPath": "integrations/kubernetes/images/controller/ssh-admission/protocol.py",
+      "sha256": "2a113f6239c93b9bd247d9ed61091c71acd2c85c2800467b867ddb5527a896e9",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/ssh-admission/source/ssh.ts",
+      "forkPath": "integrations/kubernetes/images/controller/ssh-admission/source/ssh.ts",
+      "sha256": "e02d4dcbdf1e8590072d83da6901b7e0653ae7177caea663570dca35adaf9118",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/ssh-admission/transport.ts.txt",
+      "forkPath": "integrations/kubernetes/images/controller/ssh-admission/transport.ts.txt",
+      "sha256": "4f1e5be834333bcc0fad07c06c88411d81bd9a80bbca20ba9b5ebfae666bb428",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/ssh-cancellation/README.md",
+      "forkPath": "integrations/kubernetes/images/controller/ssh-cancellation/README.md",
+      "sha256": "42f561c362404b10961f8dfa7f41c7e3de24bf3ba701375c02f169258b675d03",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/ssh-cancellation/run-control-exited-test.ts.txt",
+      "forkPath": "integrations/kubernetes/images/controller/ssh-cancellation/run-control-exited-test.ts.txt",
+      "sha256": "c5fd91c84521420e07ebccbf3978279b84bdeccb7f49a7ae23ad3a2effd4051f",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/ssh-cancellation/run-control-test.ts.txt",
+      "forkPath": "integrations/kubernetes/images/controller/ssh-cancellation/run-control-test.ts.txt",
+      "sha256": "3e3f7f6e2081adfb0404da24fedf1653edc93d90dc1049cb39324dcd68044e9c",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/ssh-cancellation/source-sha256.json",
+      "forkPath": "integrations/kubernetes/images/controller/ssh-cancellation/source-sha256.json",
+      "sha256": "63e897b484087610e8d54e3f92efae41d96947bf68a1e9a761d19fa64bf00577",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/ssh-cancellation/stop.py",
+      "forkPath": "integrations/kubernetes/images/controller/ssh-cancellation/stop.py",
+      "sha256": "9c537bfba2c3c9475dad4461f730506146532b0b02c4556c4432eff9d92145be",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/ssh-cancellation/supervisor.py",
+      "forkPath": "integrations/kubernetes/images/controller/ssh-cancellation/supervisor.py",
+      "sha256": "281b8d89e2743d87fe25e67a3b402e64c79e08a82ae2dd19f94443dd58b3bcd5",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/ssh-lease-source-sha256.json",
+      "forkPath": "integrations/kubernetes/images/controller/ssh-lease-source-sha256.json",
+      "sha256": "7e7edb6444a488c2362c49b056b741fc66895c3373b591936777a3050ec64aef",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/controller/ssh-lease-stop.patch",
+      "forkPath": "integrations/kubernetes/images/controller/ssh-lease-stop.patch",
+      "sha256": "cf5ef5344ac8bb66b699ccd14eac047f6212ca36082ae4298061d55fcedffad0",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/inputs.json",
+      "forkPath": "integrations/kubernetes/images/inputs.json",
+      "sha256": "f936ef41d1b7ecdca67f718b313b4a4abfd9175a8593ed2ca2c650e7f8e5e820",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/lan-proxy/Dockerfile",
+      "forkPath": "integrations/kubernetes/images/lan-proxy/Dockerfile",
+      "sha256": "85cd994c7e5f33e5475bbea1c822d95ca7706750f6a549d798b51330841561a5",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/published.json",
+      "forkPath": "integrations/kubernetes/images/published.json",
+      "sha256": "c9621868827837855aec4ad7af60fe531d9656c4627543def74e7347fe1b3e9d",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/runner/Dockerfile",
+      "forkPath": "integrations/kubernetes/images/runner/Dockerfile",
+      "sha256": "8781baad957e8e8610c781c4f7a05e33c49eeacdc7b36b4f2811d61079959909",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/runner/claude/package-lock.json",
+      "forkPath": "integrations/kubernetes/images/runner/claude/package-lock.json",
+      "sha256": "3ed54d2cbace6cfb71d916e5a960914ccbb7c1e4d422667a1622be0f7d79ca0e",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/runner/claude/package.json",
+      "forkPath": "integrations/kubernetes/images/runner/claude/package.json",
+      "sha256": "906c08e31bfe145b3f641af91e73f8c702cdece4cd23651d92f5d23ee18b562b",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/runner/codex/package-lock.json",
+      "forkPath": "integrations/kubernetes/images/runner/codex/package-lock.json",
+      "sha256": "3342188db684b86d577973ab63f42b79abae64af662192aa5f183acef9a3e0df",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/runner/codex/package.json",
+      "forkPath": "integrations/kubernetes/images/runner/codex/package.json",
+      "sha256": "625e671bad9f3adee9c5cdebcb3af4f38b1fe16660b978efc3ebc512c3db63c0",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/runner/entrypoint.sh",
+      "forkPath": "integrations/kubernetes/images/runner/entrypoint.sh",
+      "sha256": "beec622e943184ee2344487066f7c1f2f8c6a995c47620643deec84f3e3691e3",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/runner/gemini/package-lock.json",
+      "forkPath": "integrations/kubernetes/images/runner/gemini/package-lock.json",
+      "sha256": "096dc3cfe48983f007237e75d8ba01c7ef5c667cb3b4a3bb00cf7e8b3a81538a",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/runner/gemini/package.json",
+      "forkPath": "integrations/kubernetes/images/runner/gemini/package.json",
+      "sha256": "99cba211e6ccbeb964fafadd7933c4df42e69984d25aad87518f0f8382e81a2c",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/images/runner/sshd_config",
+      "forkPath": "integrations/kubernetes/images/runner/sshd_config",
+      "sha256": "5ed3d85922b8a0f429921ea0a61c8514bb434a4b805615ac87312d9fbf9dc6ed",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/__pycache__/test-controller-ssh-cancellation.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/scripts/__pycache__/test-controller-ssh-cancellation.cpython-314.pyc",
+      "sha256": "07acacfe82a49542af11ba88b16a46a3760a89f298d2f692745b12f0a093a4d5",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/build-images.sh",
+      "forkPath": "integrations/kubernetes/scripts/build-images.sh",
+      "sha256": "27bfb6520f66e3812b8240dc0d3453c3f9e68b50397711c8b119c6eece990af8",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/inventory.sh",
+      "forkPath": "integrations/kubernetes/scripts/inventory.sh",
+      "sha256": "198985b1a02c7595e5897c5ad0a2d9e4306069bb2167502ed5604372fb922fcc",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/load-candidates.py",
+      "forkPath": "integrations/kubernetes/scripts/load-candidates.py",
+      "sha256": "18c52b17d222439126b02d0ac334299eea91bb1b03377e8021400510a989aae8",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/patch-native-admission.py",
+      "forkPath": "integrations/kubernetes/scripts/patch-native-admission.py",
+      "sha256": "f1dae3d7c4dd6251f40d80cbe08779bd081f2f1209d0d619f343dba6158d2ef4",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/patch-ssh-admission.py",
+      "forkPath": "integrations/kubernetes/scripts/patch-ssh-admission.py",
+      "sha256": "2d8c5f57d4f6c4de6962b995f4c05599949ec3551f5e70bfe61960ee52a98eb8",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/patch-ssh-cancellation.py",
+      "forkPath": "integrations/kubernetes/scripts/patch-ssh-cancellation.py",
+      "sha256": "2311ed892d24331c95ebab0a825a2f815bad3cb33361954a8c6a3d3825c23e44",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/patch-ssh-lease-stop.py",
+      "forkPath": "integrations/kubernetes/scripts/patch-ssh-lease-stop.py",
+      "sha256": "4b1d55e89f107ef403361b6f13d8cb6c59200660054e73b0672c925b019162ad",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/prepare-controller.py",
+      "forkPath": "integrations/kubernetes/scripts/prepare-controller.py",
+      "sha256": "60863b5480968b0b3dd395284d47b94adba0ab12cd50b9fc96c023763f99fab0",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/test-controller-source.sh",
+      "forkPath": "integrations/kubernetes/scripts/test-controller-source.sh",
+      "sha256": "0ed7f4a6e6a6ca77211d483ab2ba11e3fa232bea5069ca2a3c9e4e7467d1570b",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/test-controller-ssh-cancellation.py",
+      "forkPath": "integrations/kubernetes/scripts/test-controller-ssh-cancellation.py",
+      "sha256": "ed174646fe860c712f18f6204ff842b360259bf8caee77d97387353f1e63a60c",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/test-lan-proxy-image.sh",
+      "forkPath": "integrations/kubernetes/scripts/test-lan-proxy-image.sh",
+      "sha256": "b518ee659ccbd33b694daee538aaa24fd449db98d7456726dd883ee03c602c4a",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/test-local.py",
+      "forkPath": "integrations/kubernetes/scripts/test-local.py",
+      "sha256": "2e4f5980972869479123c67173d1a7d2dfd90a857b9231573b27f054a0ea2a30",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/test-native-admission.sh",
+      "forkPath": "integrations/kubernetes/scripts/test-native-admission.sh",
+      "sha256": "45a134fde56c2ab1243b467a30fe85222165bf9c216c581b7aad8b4cd97b0f45",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/test-native-patch-guards.py",
+      "forkPath": "integrations/kubernetes/scripts/test-native-patch-guards.py",
+      "sha256": "ae0066b4935d78edd91a997c3f114d4bc5faac102c67e24a9214cc740bf75ddf",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/test-runner-image.sh",
+      "forkPath": "integrations/kubernetes/scripts/test-runner-image.sh",
+      "sha256": "bca754d4ea07ee5a2c5ac3e1e7450d8080a0481349b42cc809f4b4532e66f42a",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/test-ssh-admission.mjs",
+      "forkPath": "integrations/kubernetes/scripts/test-ssh-admission.mjs",
+      "sha256": "e9606dbc65510693a084b083459316193ccf31b1e1f0cceb0b80b2cffb53b48f",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/test-ssh-cancellation.mjs",
+      "forkPath": "integrations/kubernetes/scripts/test-ssh-cancellation.mjs",
+      "sha256": "bcfba6eb3a2740e999c1f0e9831e3321603a1cf3dcd2ac9d4d6087e08fcffee6",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/test-ssh-cancellation.py",
+      "forkPath": "integrations/kubernetes/scripts/test-ssh-cancellation.py",
+      "sha256": "f62bb53e5330c69f4cb6b927f0cfa5e3618c3627e10db3d2d1e779e1bff35449",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/test-ssh-capacity-lifetime.mjs",
+      "forkPath": "integrations/kubernetes/scripts/test-ssh-capacity-lifetime.mjs",
+      "sha256": "10cdc66b86effc7c4159b9a30776f13f69df7e031fee5e9b3999de3eb04d9d0d",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/scripts/validate.py",
+      "forkPath": "integrations/kubernetes/scripts/validate.py",
+      "sha256": "fa560416180f8f41f8bdaabf58470ebbb3cab26ac63160c233c1f116d73e6b2a",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/.gitignore",
+      "forkPath": "integrations/kubernetes/protected-execution/.gitignore",
+      "sha256": "d87202ecdd0ce35e22aa6cadbb4d10dbf8edd625c871822841f1f30b30a2b534",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/CLONE-REHEARSAL.md",
+      "forkPath": "integrations/kubernetes/protected-execution/CLONE-REHEARSAL.md",
+      "sha256": "3161a1e0183925e048b078cad3645caa29a5f13993e7621ef64bd839f85b0796",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/Dockerfile.clone-tools",
+      "forkPath": "integrations/kubernetes/protected-execution/Dockerfile.clone-tools",
+      "sha256": "5a0f3b1a1955219bdda91edf154b3ce6958664647df3fd313c388ac162516077",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/Dockerfile.disposable",
+      "forkPath": "integrations/kubernetes/protected-execution/Dockerfile.disposable",
+      "sha256": "cdf1a7aa61b684aea393f1130713485238101ae6e6782495f79814bf05148bd7",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/Dockerfile.launch-native-fixture",
+      "forkPath": "integrations/kubernetes/protected-execution/Dockerfile.launch-native-fixture",
+      "sha256": "889499e39d6c9baf876f75712086b39e954a808337deb60b98f5586033ef71c7",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/Dockerfile.synthetic",
+      "forkPath": "integrations/kubernetes/protected-execution/Dockerfile.synthetic",
+      "sha256": "a3f85df698836e0f7b4a8dfa1b37c529e562d21189803e6b7de9c93b2cabec31",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/IMAGE-PVC-REHEARSAL.md",
+      "forkPath": "integrations/kubernetes/protected-execution/IMAGE-PVC-REHEARSAL.md",
+      "sha256": "cb96660ebca1b7a0183d7d57b445e9821e3dd7b17efd977ffcf45098b5be036e",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/README.md",
+      "forkPath": "integrations/kubernetes/protected-execution/README.md",
+      "sha256": "5c91a6a9d5a4f84970018c7c18ed0784c315ffbbbeaa54c34bdd0718fdde3490",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/admission_webhook.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/admission_webhook.cpython-314.pyc",
+      "sha256": "e179e5bdbfecb85ea743bfce7fcd71938a06a5eed19d09d4da026651e36b3140",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/authority.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/authority.cpython-314.pyc",
+      "sha256": "bc9ad569c4b17de65d90e51cf0648c5016e8dc63f59cfe3023e85078be484d9e",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/cri_stop_witness.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/cri_stop_witness.cpython-314.pyc",
+      "sha256": "4567a88b8d64268b6553fa2c4bd93eeb2a8ae73af652284f159f8245fdf170ab",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/docker_runtime.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/docker_runtime.cpython-314.pyc",
+      "sha256": "f8db82bf3316d149285bd606684433796addba08d3ea866be10910f0a8e1d52f",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/durable_state.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/durable_state.cpython-314.pyc",
+      "sha256": "d04f3487e5baebbf4441acedf502d17e1dde964a2282276b369eba2d860da3ea",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/image_pvc_clone.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/image_pvc_clone.cpython-314.pyc",
+      "sha256": "b30a4863c869e630c7747a08a4b76c79934f0e125063a8b8846a996371271994",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/kind_launch_fixture.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/kind_launch_fixture.cpython-314.pyc",
+      "sha256": "c19c8a783982031bdca0e33ce724362691873101c9bb8513fd7c679929dc01a3",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/kubernetes_api.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/kubernetes_api.cpython-314.pyc",
+      "sha256": "6dda22b773f410e72f50fbae43386a4637beaf5ff2f011d5b9eb60e067e2f11f",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/kubernetes_boundary.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/kubernetes_boundary.cpython-314.pyc",
+      "sha256": "3cfb7d8139285c7557732c8a64e96bb1bc2f11a68c44a775f6f6cbb8d3d2b9a4",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/launch_consumption.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/launch_consumption.cpython-314.pyc",
+      "sha256": "490509a4f0e33382704dc869cadbcea4cb849146cc4d3ccfd539c6b9dad96884",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/launch_native_fixture.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/launch_native_fixture.cpython-314.pyc",
+      "sha256": "94afc61340b93912a17c1e4a13b085658a8d9f61fde11c2398d8d58956d9e11e",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/legacy_review.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/legacy_review.cpython-314.pyc",
+      "sha256": "4653b8f62ca2055c12ef914206c122329f6bd53ad6acbcc9447701ea1e099f95",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/safe_transfer.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/safe_transfer.cpython-314.pyc",
+      "sha256": "582e55cd56a5aafe2108c4c25e38cf2a063f5933f3e901644bffcaac16dd1d77",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/service.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/service.cpython-314.pyc",
+      "sha256": "1b2c196e8bc741c449de4e6ccca5599e9dc0c4a06c504a5edf540f65010330d3",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/state_contract.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/state_contract.cpython-314.pyc",
+      "sha256": "b24ae4ecd1a1a4121e9eeef9c3622e7a1aa155ec64e87f6a64d55167edeb6db4",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/test_authority.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/test_authority.cpython-314.pyc",
+      "sha256": "7bcf4a45a74002f45fcf8d8013da8f6059d276f135fbe2b9d1bac4ce11ec0d4d",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/test_cri_stop_witness.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/test_cri_stop_witness.cpython-314.pyc",
+      "sha256": "88ae410ea2a6433e4a1932f994fc6505b8a6f8f69b1940b4a5a73d2c2a11d55d",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/test_disposable.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/test_disposable.cpython-314.pyc",
+      "sha256": "e43cb791a5a35b0b59559359f484b4289f582a76a3fb421c831b87c7a03ffacb",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/test_durable_state.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/test_durable_state.cpython-314.pyc",
+      "sha256": "ea34de08bff60826e757980cdda032428a3f63028191b882d869f883979a22a8",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/test_image_pvc_clone.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/test_image_pvc_clone.cpython-314.pyc",
+      "sha256": "e80401618aa341756f10c221173cfaa90a22534d312fa06a9e4c922577f39875",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/test_kubernetes_api.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/test_kubernetes_api.cpython-314.pyc",
+      "sha256": "f30a5e8b7b4a01a567f134765af999406946587f8c41610543ab95805334b8aa",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/test_kubernetes_api_disposable.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/test_kubernetes_api_disposable.cpython-314.pyc",
+      "sha256": "a842631b8ecda04ee19da0e69ecbbd21618a744dd807ae2217de94edef80baa4",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/test_kubernetes_boundary.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/test_kubernetes_boundary.cpython-314.pyc",
+      "sha256": "4767fc6ceaaadce2a0d4c857a2056bdc0ba27d3a6d2aef391d3e48d5e3e0128c",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/test_kubernetes_disposable.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/test_kubernetes_disposable.cpython-314.pyc",
+      "sha256": "3006c12218a36733732d82f37ce8ecc220d03f8b94fff992332511ed129c27de",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/test_kubernetes_failure_disposable.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/test_kubernetes_failure_disposable.cpython-314.pyc",
+      "sha256": "7fdccbdb26da94f3defc2cf9cddcd5ef851b90edf7d6b55f7534a2d2be0cd81b",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/test_kubernetes_fixture_stop.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/test_kubernetes_fixture_stop.cpython-314.pyc",
+      "sha256": "f1ff592054c452398a7798bf5921834850b1fa1490cf82b218d6f9926b085d11",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/test_launch_native_fixture.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/test_launch_native_fixture.cpython-314.pyc",
+      "sha256": "9e412e218aabe5059bd45714d21b7c3b16fc6b68aaa1faaf2df5daf648def24a",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/test_legacy_review.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/test_legacy_review.cpython-314.pyc",
+      "sha256": "563ec53e5ef534a36ad393518eb495bbbc82fea8915914987643e3a69fe8317e",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/test_network_disposable.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/test_network_disposable.cpython-314.pyc",
+      "sha256": "f61084e3b93235027336a6a70e44bfcce07dc7894ac94d5463435dfd9653ad80",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/test_operation_worker.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/test_operation_worker.cpython-314.pyc",
+      "sha256": "50e79a91155b8ebc6db14766d5f08cc80d2fe78e4022b95913953f68e36ddfe9",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/test_postgres_socket_disposable.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/test_postgres_socket_disposable.cpython-314.pyc",
+      "sha256": "5061fee2e56878f81bd78c9e00e3556afb14e96307838c39cd4c3ef87e8f98dc",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/test_production_stream.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/test_production_stream.cpython-314.pyc",
+      "sha256": "3c8e595ffa75e371bccffa8d9d4ec526e211beb8e036c123e33b863d299ea1ab",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/__pycache__/test_transfer.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/__pycache__/test_transfer.cpython-314.pyc",
+      "sha256": "821b298ddc63459ba005c35233753b7f7964373bd5bfcb87f5b292634b4c7520",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/admission_webhook.py",
+      "forkPath": "integrations/kubernetes/protected-execution/admission_webhook.py",
+      "sha256": "a6d872d3051b47e5035a26887737aff34818ccce4f8d04f86a0348087aa34139",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/authority.py",
+      "forkPath": "integrations/kubernetes/protected-execution/authority.py",
+      "sha256": "38342f77893f6724a817104ca85be4c7c1ff4c579d2db07768ab5355221b8155",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/canonical_owner.py",
+      "forkPath": "integrations/kubernetes/protected-execution/canonical_owner.py",
+      "sha256": "285be0bc9ed89000f6d05abc6b7ee2b292dbd9e115468e41fd73b32972a2fd9e",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/canonical_tree.py",
+      "forkPath": "integrations/kubernetes/protected-execution/canonical_tree.py",
+      "sha256": "85e0879553aeaf94fc979fa0328bbc77a9da9c72f1405cbcfffeb04fc629d7ef",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/cri_stop_witness.py",
+      "forkPath": "integrations/kubernetes/protected-execution/cri_stop_witness.py",
+      "sha256": "c50bfa6fd7ef4f998763a8a83378045a783379b5e603c5a464f03b1e88001c4c",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/custody-test-requirements.txt",
+      "forkPath": "integrations/kubernetes/protected-execution/custody-test-requirements.txt",
+      "sha256": "aaf165c6e8bce8f9bee2fe418455225f8b5ece571d7af3a598822f98bcd72f26",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/daily_use_acceptance.py",
+      "forkPath": "integrations/kubernetes/protected-execution/daily_use_acceptance.py",
+      "sha256": "413055c2c3083577cc09d45795ad59241318f607740834446391c16fd3a98e63",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/descriptor_safe_storage_fixture.py",
+      "forkPath": "integrations/kubernetes/protected-execution/descriptor_safe_storage_fixture.py",
+      "sha256": "80cfb1fadd5a17a3b0f3a885c4a34fd9bd63ad6d6df2542d5d913d07fbce53f2",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/detached_group_fixture.py",
+      "forkPath": "integrations/kubernetes/protected-execution/detached_group_fixture.py",
+      "sha256": "8852532d7ee9bb4b27cf1dc7089dbbab4d0a87596c4c7877311920f62dde8316",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/docker_runtime.py",
+      "forkPath": "integrations/kubernetes/protected-execution/docker_runtime.py",
+      "sha256": "e8a4c19b9b79da2a34aca062e6bf16756ed6e1fdaee05070d118696ae56efd90",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/durable_state.py",
+      "forkPath": "integrations/kubernetes/protected-execution/durable_state.py",
+      "sha256": "d93b0f3b32179345b7511f936e65614f17163c2a888c74479adc0de94de3f114",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/image_pvc_clone.py",
+      "forkPath": "integrations/kubernetes/protected-execution/image_pvc_clone.py",
+      "sha256": "300c80d8d16047103e1388bba23899263045ff128b3329c2556ca7cbbd2409eb",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/kind_launch_fixture.py",
+      "forkPath": "integrations/kubernetes/protected-execution/kind_launch_fixture.py",
+      "sha256": "9da61f5846eca054f42fd66788099420340bcc7ecec75790682a66b2111b05a8",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/kubernetes-review/README.md",
+      "forkPath": "integrations/kubernetes/protected-execution/kubernetes-review/README.md",
+      "sha256": "639da89844b095fd8bf31b86a6d2fb1ca6474273f377f7d4752a2d462930097b",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/kubernetes-review/__pycache__/network_fixture_runner.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/kubernetes-review/__pycache__/network_fixture_runner.cpython-314.pyc",
+      "sha256": "a9ee1b5c62be5ad06cf264643b0ff53a928dbdec27c310b177c12ecce749ba49",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/kubernetes-review/__pycache__/render.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/kubernetes-review/__pycache__/render.cpython-314.pyc",
+      "sha256": "4d1895832a085bfb18ba4b1aa707c90262e70ca3e01f7c7f66c96a5ceee8929d",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/kubernetes-review/__pycache__/test_review.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/kubernetes-review/__pycache__/test_review.cpython-314.pyc",
+      "sha256": "cac39888e11ac2962d8615f7883ff2a8a67478da1d04f2fb1a1cb5a3a5b07241",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/kubernetes-review/network_fixture_runner.py",
+      "forkPath": "integrations/kubernetes/protected-execution/kubernetes-review/network_fixture_runner.py",
+      "sha256": "875bd64f4a237b8bf9a4f8f42b4ee15a60f368b3492c46d944536388bbb171be",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/kubernetes-review/render.py",
+      "forkPath": "integrations/kubernetes/protected-execution/kubernetes-review/render.py",
+      "sha256": "6f3b60e0255c5052c51edee9ca83bceb88e945ba413f8ccba381d4d0c99c7d75",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/kubernetes-review/test_review.py",
+      "forkPath": "integrations/kubernetes/protected-execution/kubernetes-review/test_review.py",
+      "sha256": "ad1b59436bb685933822391902575905c6ffd1e4069abe5f96e518d7586183fc",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/kubernetes_api.py",
+      "forkPath": "integrations/kubernetes/protected-execution/kubernetes_api.py",
+      "sha256": "0b85102cf5c9a6fd850f5ac70a70c24d407723496602fc34efd7d193ae8e84c0",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/kubernetes_boundary.py",
+      "forkPath": "integrations/kubernetes/protected-execution/kubernetes_boundary.py",
+      "sha256": "739743fcb44b0fcddd42c66f4b7120b4db41774f1a96b90842387e9298d621ea",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/launch_consumption.py",
+      "forkPath": "integrations/kubernetes/protected-execution/launch_consumption.py",
+      "sha256": "1f63d721763ccecbf50aa4ee1db20769489ffa5b863c18ebf49f028b2d35e326",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/launch_native_fixture.py",
+      "forkPath": "integrations/kubernetes/protected-execution/launch_native_fixture.py",
+      "sha256": "1dd8184eb60f76e800406f7e5b1e10dc7360fb05655dce74604ae788ef28bd98",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/legacy_review.py",
+      "forkPath": "integrations/kubernetes/protected-execution/legacy_review.py",
+      "sha256": "e8fff44c9540972a6f55adee9f737b41b73c0132ebbfeef2385f8fa0dcf97cb0",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/multi_uid_storage_fixture.py",
+      "forkPath": "integrations/kubernetes/protected-execution/multi_uid_storage_fixture.py",
+      "sha256": "7d4a9d0843172aaa9b34ab55f2dfce2f863cac7ec157e18b72358004c0874148",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/native_commit_semantics.py",
+      "forkPath": "integrations/kubernetes/protected-execution/native_commit_semantics.py",
+      "sha256": "a095593c790c2683c30967080fea91968b38de0599b528ef4f3ec9b933737806",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/__init__.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/__init__.py",
+      "sha256": "9288695405598a3c62e33d306f82f273950876077acf395008d17894860623a6",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/__pycache__/__init__.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/production/__pycache__/__init__.cpython-314.pyc",
+      "sha256": "a907951dee976ede5f355625f6ffe541e0f827c23f06010dc991c9bf8fe2f02f",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/__pycache__/gateway.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/production/__pycache__/gateway.cpython-314.pyc",
+      "sha256": "e42bec54c5b65065f6cc2e043a93e76a8dbd8add46a245be700a2000f8f5d038",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/__pycache__/operation_worker.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/production/__pycache__/operation_worker.cpython-314.pyc",
+      "sha256": "46a4d08e364ce2eda875119498bb7d2112ed1fb7be92b1133bc771ae2f4d75fc",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/__pycache__/stream_server.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/protected-execution/production/__pycache__/stream_server.cpython-314.pyc",
+      "sha256": "c2952fe045b93cbb75fe32555407b6e7d29403443d127f377233bc48af5b8680",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/command_frames.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/command_frames.py",
+      "sha256": "c6b7de1d57f7fc3a0e8fb758f1134d5b0d15f799f81a3ea782b5975c02675c97",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/custody_service.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/custody_service.py",
+      "sha256": "938f588f93cc1efba1526174d5eb60db4e7c7d96cbd02f76536ddcb1c5df6d44",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/decision_history.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/decision_history.py",
+      "sha256": "7ffa8ad6258e90713498dcae4ab2f72dd9b70fe80ec76c0c5788ee21c3df4a98",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/decision_use.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/decision_use.py",
+      "sha256": "c72a991031e86b079c0c5ba79235fc9235db4c2ef70fde9c397022cc7e9f994b",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/descriptor_paths.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/descriptor_paths.py",
+      "sha256": "1ed6d44f992081cce67356f264d858043296381c3e9a694b87901fe0ec534622",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/detached_exec.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/detached_exec.py",
+      "sha256": "6736ab1920920d9f269f8154fca1e6f0201039233898248860108c887a5b6240",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/evidence_bridge.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/evidence_bridge.py",
+      "sha256": "dfc7fc152f6f023c740d028ef6dc3c51ab0d516d8c5dfe6fc7243835bf2d8724",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/gateway.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/gateway.py",
+      "sha256": "092f559cb3150c317d82e9a0f4201c3c9e5b971ccc7f3a2123aab04c8880a230",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/history_continuity.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/history_continuity.py",
+      "sha256": "cd3583a1efa3d30a2d4ed75b48470f3896e1925d32a59145ea2dec9e2bad96ca",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/operation_worker.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/operation_worker.py",
+      "sha256": "95021960c18a860a75629126862aa2e3e1954f99bbbe0ad8f26b0b4578ed520c",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/owned_authority_calls.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/owned_authority_calls.py",
+      "sha256": "a731fb5f2142164712db6ca3c8a79fd79dfea04d8a580e1a19cc2475b52c3ec5",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/owned_effect_dispatch.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/owned_effect_dispatch.py",
+      "sha256": "f8184d548ee0d29af35c373454014529da3c8883bc9ab5f9af1d10642ad19d7f",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/retained_decision_store.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/retained_decision_store.py",
+      "sha256": "4201d8606c7219d3f8c1bbc9ffbb01f49f98d18fa1e08cc1c1c258692d11f58b",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/retained_stop_dispatch.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/retained_stop_dispatch.py",
+      "sha256": "8ecb2e747419860c874cdffd4c613e8c8c9094e042ae92e4d9860280805df3f1",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/route_policy.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/route_policy.py",
+      "sha256": "3e5a0e814ba2de3ac05e6b746637510d46fc6bc7dc76ccb1be748bda857a50f9",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/runtime_boundary.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/runtime_boundary.py",
+      "sha256": "de3e0a4f5255240de0ee219f0eba086121c9656fcb97e3459d4ab8a6913dd357",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/runtime_owned.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/runtime_owned.py",
+      "sha256": "ea81cc21e835b657635706a31c160529a26d77e4dcb808d293dd47e8ca1da308",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/stream_server.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/stream_server.py",
+      "sha256": "23be59d052606558c1209e32bb3158c7744fd3405fb680d63aeaabe12c20881d",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/write_authority.py",
+      "forkPath": "integrations/kubernetes/protected-execution/production/write_authority.py",
+      "sha256": "762f0266db6bc228836b1e19d1782f80d60fe1f7ef977e3b9c434419a5ff3daa",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/runtime_provenance_inventory.py",
+      "forkPath": "integrations/kubernetes/protected-execution/runtime_provenance_inventory.py",
+      "sha256": "5697cec62306bfd7ca2c6d18fe9f45dc950e8dcadee15380df307f9a5e6b5dc3",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/safe_transfer.py",
+      "forkPath": "integrations/kubernetes/protected-execution/safe_transfer.py",
+      "sha256": "b190c8fdd0d8f80203d478349c321621fc579ec58b09338e2e792bd1188c937f",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/service.py",
+      "forkPath": "integrations/kubernetes/protected-execution/service.py",
+      "sha256": "8b9caf7272e44e08f4ad19bcb5bf4c5086469a1d0799d446b8c5efc502671bc1",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/sql-review/README.md",
+      "forkPath": "integrations/kubernetes/protected-execution/sql-review/README.md",
+      "sha256": "5fba42304ab324da4c436c61d8381f44fd3669ba5bba764014d24315e4046f91",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/sql-review/authority-native-fixture.sql",
+      "forkPath": "integrations/kubernetes/protected-execution/sql-review/authority-native-fixture.sql",
+      "sha256": "e1db03ab1d8c346c1cd0d7cd071273e3897d2dcafb4d4dd651e9cb9a8052ebb7",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/sql-review/authority-native.sql",
+      "forkPath": "integrations/kubernetes/protected-execution/sql-review/authority-native.sql",
+      "sha256": "6efb16663fe65470dd4063720bcb71251d0c12e391dc876b6762bc0c87eeac52",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/state_contract.py",
+      "forkPath": "integrations/kubernetes/protected-execution/state_contract.py",
+      "sha256": "d9a7eaea4521dcec53ce978a0dc16406ebf9a47423645dfb408926d6d404e0c6",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_authority.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_authority.py",
+      "sha256": "2fcf86e4f7d42bc4648f3996fcfc6d2cde63cd657cc4a23046206d919d77891d",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_authority_native_postgres.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_authority_native_postgres.py",
+      "sha256": "2eb6b490eeb8156c551867921f5ad556b99b34d1585a519ae2bde916ea5906d3",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_canonical_owner.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_canonical_owner.py",
+      "sha256": "4ab597d07db02f51cf591351fd43b52269708fb98d78ec533d9b9879d875d99f",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_canonical_protocol_adversarial.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_canonical_protocol_adversarial.py",
+      "sha256": "14fc4fca7dadf0d7399b58501455f5781ae22f31a26f975576274da36480c239",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_canonical_tree.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_canonical_tree.py",
+      "sha256": "c752b52acd7d65134a4e8b4332733b4c58cfa1385a2688b9c73652df67e64c1d",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_command_frames.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_command_frames.py",
+      "sha256": "d4436bb1e39d52f66f88f5b9e493470c08c5639356af963de041f336658160bb",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_cri_stop_witness.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_cri_stop_witness.py",
+      "sha256": "521dcbb61a4b1901d5fb296a6cf1013154a8436eed0dfb69e4d0e7ff028596ce",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_custody_service.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_custody_service.py",
+      "sha256": "ff7e8aa7e2cc5ed30ce11cc0898e1ca9df86ee2f6909c88e532b0fb0541207fa",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_daily_use_acceptance.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_daily_use_acceptance.py",
+      "sha256": "515a1eeb4aa6b5ae0e80027d4e3bbccf2ae5086e9a11d2ae4b258105bf64a515",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_decision_history.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_decision_history.py",
+      "sha256": "e213435f72b8d1e47356b32d958d6a7399f3214402310cf541343db85c3a0dcd",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_decision_use.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_decision_use.py",
+      "sha256": "e7db751beb1d495c2a18607d70cb9f8224215f62d79317a37943e377690898b5",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_descriptor_safe_storage_fixture.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_descriptor_safe_storage_fixture.py",
+      "sha256": "78755386a9fd3f8a9e1d6f1d46ab018a4c9167f05fab80253dd4acae87a09e10",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_detached_exec.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_detached_exec.py",
+      "sha256": "7a54d8c672c27f8a4f9955b28804790deaddc9863f0b0437a589ed77602d798e",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_detached_exec_adversarial.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_detached_exec_adversarial.py",
+      "sha256": "bb04e5fa7060ef31e07dfd3c8f435d12c9764fe3b39d2162c9804ad0b1fb1791",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_detached_group_fixture.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_detached_group_fixture.py",
+      "sha256": "17d7a43c306b371b1d3f1df35e3cda8c119723a41391ea824f9ee5adefa748af",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_disposable.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_disposable.py",
+      "sha256": "02fb1875b26a8d537818e1192608b1e8d52778fc78d67d2b87698afec3b85186",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_durable_state.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_durable_state.py",
+      "sha256": "ef92d812a76210266601199306245afb1a55b05b873c7808ddb0214c58821812",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_history_continuity.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_history_continuity.py",
+      "sha256": "89505711b3a1d9d6362f468c570d74e919b1680a6b87480f8dbe2a200c691ec0",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_image_pvc_clone.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_image_pvc_clone.py",
+      "sha256": "4eface8210e4addf6bdcfe635adf1f7300b1dc3960b22320c9c975993afb3a58",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_kubernetes_api.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_kubernetes_api.py",
+      "sha256": "2b30be1184d44a9f6ef96d15cecdaba31f7259633ad9322fd20e2df1d55399d2",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_kubernetes_api_disposable.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_kubernetes_api_disposable.py",
+      "sha256": "73d6620f89dceaf3b8e1c9da276d3a718d3581749dfa6fc71e1ec0fe00eda974",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_kubernetes_boundary.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_kubernetes_boundary.py",
+      "sha256": "5676d4f2bdfd48ef7ebcc52a272c2d65272d0274190c27bac12cbc4953226a04",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_kubernetes_disposable.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_kubernetes_disposable.py",
+      "sha256": "2294a6c7f547a4dc44b969a8df3e4e711e72b5a79ea4d1ff0903cc49e16e5ba6",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_kubernetes_failure_disposable.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_kubernetes_failure_disposable.py",
+      "sha256": "b221fc567dd28cad08c4fec7da0a7a1cb221b92e9f3cad0f3ac08114b102630a",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_kubernetes_fixture_stop.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_kubernetes_fixture_stop.py",
+      "sha256": "acec67094c36a046920211bffde0976522936a859e5b85916773733bbed01817",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_launch_native_fixture.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_launch_native_fixture.py",
+      "sha256": "2caefe284f165a2066c0d1ad61261e1c25deae61941b2ee98b4475049f346cbe",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_legacy_review.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_legacy_review.py",
+      "sha256": "1dfd8b2aadc3020be76859ebadcc670450fab499bda1a8f420b31c56fc3a186a",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_multi_uid_storage_fixture.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_multi_uid_storage_fixture.py",
+      "sha256": "abcd67f38bcd1d281fc220a2b30aa74e350ab77af43e238edaf038f6950850f2",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_native_commit_semantics.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_native_commit_semantics.py",
+      "sha256": "2499b11957ba3a075dd28e4ccf5f622d2896c583063517119d99db024dd01516",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_network_disposable.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_network_disposable.py",
+      "sha256": "91645a03abb4168df133951fd55ee5d4d0ce2f30c05d2459d11f22c68d63b4b2",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_operation_worker.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_operation_worker.py",
+      "sha256": "a2db1bf3a7a8d3c801fff38feb2a5837e3d9e79b5cd69db0e46fffc48838c197",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_owned_authority_calls.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_owned_authority_calls.py",
+      "sha256": "3f859e6dd34de1a95a3b0df77b8cbbe8d207f9203a518241cd1d598727a12ba4",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_owned_effect_dispatch.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_owned_effect_dispatch.py",
+      "sha256": "95a53bfa57abefd7815212de1ccb663094db9ca69d972a0b0fcea73cfb2bb166",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_postgres_socket_disposable.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_postgres_socket_disposable.py",
+      "sha256": "a482377e0a88c7b6f73ad4a8b3e1fc3feba76ecf9db57abeadecc9b31681c4c8",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_production_contracts.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_production_contracts.py",
+      "sha256": "4b274bc0c39659b020fc37132caca84f7285f4c8a49fb1782b7eb9d4b526aaa9",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_production_evidence.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_production_evidence.py",
+      "sha256": "2fd44f2c2e07f55febae16fc02f20cfcfc668e4033e61293c96c76fa72bfd173",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_production_stream.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_production_stream.py",
+      "sha256": "ccd8e01f0e54de288abae5b63703d5d4d059bdc101662759d2a116b68ad3c760",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_retained_decision_store.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_retained_decision_store.py",
+      "sha256": "1a9c2cb280e0a95c6d32389ba1f5c839c1bc437602d00811c6ecaea5edee64a2",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_retained_stop_adversarial.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_retained_stop_adversarial.py",
+      "sha256": "6aab27227fabecf20ca424dbb69a7bed68647ccd6f0c6f2a67ce75c2a3a8300d",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_retained_stop_dispatch.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_retained_stop_dispatch.py",
+      "sha256": "6a39bc0b5a7f3817a5553507d7d9ab06d2cab92b92ab8c610f1cd6b661a7ceaa",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_route_policy.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_route_policy.py",
+      "sha256": "42392506eea3bd018a69b0856ccbb033b65cab10ea9450c289f9e0ec4145e5a8",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_runtime_boundary.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_runtime_boundary.py",
+      "sha256": "824a27ec3d1aa95c02efc770725b97d3315b343bdda23486d082334e36e23a73",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_runtime_owned.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_runtime_owned.py",
+      "sha256": "56f5ac067233ddfdef139b1e221d8fc82397d8c4305be14ad55a3944563f2781",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_runtime_provenance_inventory.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_runtime_provenance_inventory.py",
+      "sha256": "c36d41bfa8cf6996ea831e971802793db2fe7f4e93cca9c49c71ccf8d5e33489",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_transfer.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_transfer.py",
+      "sha256": "acba066b17fb825bbf6b3d9947bfc813ce9cee7a6a6dd2174026bc4fcf545bf3",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_write_authority.py",
+      "forkPath": "integrations/kubernetes/protected-execution/test_write_authority.py",
+      "sha256": "7c51c712bac4298dee51463958747141fdacb1b1d1078033aa42b8534277ea07",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/fixture/.gitignore",
+      "forkPath": "integrations/kubernetes/fixture/.gitignore",
+      "sha256": "9b6d3d83a1fda1a7c4a6eee462bf945042d7ed8f3f7c1527710e690484d21255",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/fixture/TASK.md",
+      "forkPath": "integrations/kubernetes/fixture/TASK.md",
+      "sha256": "0e67d74637636352ea0f5eb0619a967c554774918232a059170c9e49128b8248",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/fixture/math_utils.py",
+      "forkPath": "integrations/kubernetes/fixture/math_utils.py",
+      "sha256": "b414e3e8a1cc84d091471727544c353f60db59fc2bea10ee562ece77410915be",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/fixture/package.json",
+      "forkPath": "integrations/kubernetes/fixture/package.json",
+      "sha256": "e57e175e4cac8f805601829a903880a85b71b6fc936928de1f60a929ccbd4681",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/fixture/src/math.ts",
+      "forkPath": "integrations/kubernetes/fixture/src/math.ts",
+      "sha256": "b13498489d597dfeb549016931fa73ae401e42b5e754a7cc7a33e0196e9e401d",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/fixture/test/math.test.mjs",
+      "forkPath": "integrations/kubernetes/fixture/test/math.test.mjs",
+      "sha256": "302b4bfe31f3727a1019ec8e28eb33ee20af506dc4472280e21c9884659bf230",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/fixture/test/test_math.py",
+      "forkPath": "integrations/kubernetes/fixture/test/test_math.py",
+      "sha256": "dbe8741c87574e346ad9b0befd76d8e1744a7a97d48207ddbc55489155f7c316",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/fixture/tsconfig.json",
+      "forkPath": "integrations/kubernetes/fixture/tsconfig.json",
+      "sha256": "f67d44f111c2cfcb13743b2c78499405487583b05e79866e49a1815d028e6cc9",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/fixtures/admission/.gitignore",
+      "forkPath": "integrations/kubernetes/fixtures/admission/.gitignore",
+      "sha256": "32dae3052f331ee34d628ef535709b301259a45df7c7522c4d35dcf49873f00b",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/fixtures/admission/README.md",
+      "forkPath": "integrations/kubernetes/fixtures/admission/README.md",
+      "sha256": "3278f785dde4696a10f705bd2756c73dfb0ecece8145981aa9e2dda28a30ca4f",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/fixtures/admission/__pycache__/remote-fence.cpython-314.pyc",
+      "forkPath": "integrations/kubernetes/fixtures/admission/__pycache__/remote-fence.cpython-314.pyc",
+      "sha256": "fc27b339b5a92a8a330fb2ea250bae03add5747fea2c3b8e3f435c4a79ee1c9a",
+      "generatedCache": true
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/fixtures/admission/ledger.mjs",
+      "forkPath": "integrations/kubernetes/fixtures/admission/ledger.mjs",
+      "sha256": "f0d653c91f86f82fa7c4d6ff2023e03f5d895d3d21c490415e2ac2012da49971",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/fixtures/admission/ledger.test.mjs",
+      "forkPath": "integrations/kubernetes/fixtures/admission/ledger.test.mjs",
+      "sha256": "f1b98f8aab53fd03a3d55c3f08f1721f711fb1a24ebb24c07d336b7eaeb0b2dc",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/fixtures/admission/remote-fence.py",
+      "forkPath": "integrations/kubernetes/fixtures/admission/remote-fence.py",
+      "sha256": "eb018e354ee3802d5283d95b39a576d7a132e69b72e4de53131856ef2b0a776a",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/fixtures/admission/schema.sql",
+      "forkPath": "integrations/kubernetes/fixtures/admission/schema.sql",
+      "sha256": "ab965e5e8db9b7a57d04ac3c519df83abf73de6fba9c23c4cf2b32f775db518a",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/fixtures/admission/source-attestation.json",
+      "forkPath": "integrations/kubernetes/fixtures/admission/source-attestation.json",
+      "sha256": "a9f57ad464b50af3c2fe6a6bc975e97e9d11d2bc16a2addc58405afdf91d2397",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/fixtures/admission/test-remote-fence.py",
+      "forkPath": "integrations/kubernetes/fixtures/admission/test-remote-fence.py",
+      "sha256": "696b817145e593f962f10288e56c96471795e55d7203d9e44ce63eccbf550c98",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/fixtures/admission/test-supervisor-fence.py",
+      "forkPath": "integrations/kubernetes/fixtures/admission/test-supervisor-fence.py",
+      "sha256": "549cb61e9dd212ef4cfbbbda1c87b6c62a4b28616a82b5d499296ed947688254",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/fixtures/admission/test.sh",
+      "forkPath": "integrations/kubernetes/fixtures/admission/test.sh",
+      "sha256": "7307dbb2bd65310cdba5a5d00e52015f458b709614cc159c1bd3b18ab73e824d",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/activation-2026-10-14.md",
+      "forkPath": "integrations/kubernetes/docs/activation-2026-10-14.md",
+      "sha256": "3f140689c16f43ffe768a23bebcab469cee7a5b59c52a143588945d2ec34c8ab",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/admission-claims-2026-10-18.md",
+      "forkPath": "integrations/kubernetes/docs/admission-claims-2026-10-18.md",
+      "sha256": "3691a389dc5ca72170b7054e1913f731b48701c072793204dff2f8cd1db79180",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/admission-guards-2026-10-19.md",
+      "forkPath": "integrations/kubernetes/docs/admission-guards-2026-10-19.md",
+      "sha256": "f20a136b32eae57c02b9f6b5d02f0b37d83b8d87a0e478a6b2ba05d78cf23915",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/admission-operations-2026-10-19.md",
+      "forkPath": "integrations/kubernetes/docs/admission-operations-2026-10-19.md",
+      "sha256": "0b2ead57e39b4a273a9052923694fd205bd511ed0a43095dc7f71dc52037e3c1",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/admission-source-audit-2026-10-18.md",
+      "forkPath": "integrations/kubernetes/docs/admission-source-audit-2026-10-18.md",
+      "sha256": "215df7ecd4f9d890fa00eb7c671d14bcdfeb2038f5fc7172ccbb5138a9daa656",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/attestation-capacity-plan-2026-10-19.md",
+      "forkPath": "integrations/kubernetes/docs/attestation-capacity-plan-2026-10-19.md",
+      "sha256": "8d175a130c8bcca1a79798e379ba3293f21a1ad41975787b23af8f7dce452f03",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/bootstrap-review/README.md",
+      "forkPath": "integrations/kubernetes/docs/bootstrap-review/README.md",
+      "sha256": "d39a8648f00e012ca6b9bc158b63080c09c4bef67be960043930d3ce23900587",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/bootstrap-review/account-window.json",
+      "forkPath": "integrations/kubernetes/docs/bootstrap-review/account-window.json",
+      "sha256": "1b1098bb7a6b79aa00719bb2e03406dc08c8ecf08d13b83974139d02fe5698e3",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/bootstrap-review/changes.json",
+      "forkPath": "integrations/kubernetes/docs/bootstrap-review/changes.json",
+      "sha256": "2cdca644d7d7b6e8cfcfa8e9e6cb9ea6a518f5f646a3fd32a6d193d1057eccfb",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/bootstrap-review/changes.patch",
+      "forkPath": "integrations/kubernetes/docs/bootstrap-review/changes.patch",
+      "sha256": "390645bc10a708bc811e3b5d7feff453ea2c369845f325c9c64e58e771d82365",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/bootstrap-review/evidence-activation-sequence-2026-10-20.md",
+      "forkPath": "integrations/kubernetes/docs/bootstrap-review/evidence-activation-sequence-2026-10-20.md",
+      "sha256": "ac0a17ca5fb2e0d2bfcaa47ce7dda88cdca81dc42aa7291a40dec6711abf70b4",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/bootstrap-review/held-policy.json",
+      "forkPath": "integrations/kubernetes/docs/bootstrap-review/held-policy.json",
+      "sha256": "7ba30c0cc67ed294d395185a46e5ce56dc67efcca2791c06beca7cf601c12e6c",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/bootstrap-review/legacy-manual-migration-review-2026-10-20.md",
+      "forkPath": "integrations/kubernetes/docs/bootstrap-review/legacy-manual-migration-review-2026-10-20.md",
+      "sha256": "cbec25bfd413fc67d7828f28d919eb151504afe0ef53742787a0991bc88a3c27",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/bootstrap-review/legacy-reconciliation-review-2026-10-20.md",
+      "forkPath": "integrations/kubernetes/docs/bootstrap-review/legacy-reconciliation-review-2026-10-20.md",
+      "sha256": "ff3d966a79a9aa3b2b8609e11e6e15cc15a9b148dfad9e6a22bbe1db703c9233",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/bootstrap-review/non-root-execution-design.md",
+      "forkPath": "integrations/kubernetes/docs/bootstrap-review/non-root-execution-design.md",
+      "sha256": "867868d95ad847888fa075a2946af693424a63df7620307ff09cd3ee2dc8ca9a",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/bootstrap-review/operational-evidence-matrix-2026-10-20.md",
+      "forkPath": "integrations/kubernetes/docs/bootstrap-review/operational-evidence-matrix-2026-10-20.md",
+      "sha256": "04045c54b80445e6f5e995ff287ca26313d314cac083196dde0d6d26368d076e",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/bootstrap-review/physical-current-inventory-2026-10-20.md",
+      "forkPath": "integrations/kubernetes/docs/bootstrap-review/physical-current-inventory-2026-10-20.md",
+      "sha256": "fe781f91117a76fd9401f7e27197ebcc6505b612777c4aab2c99f35b3410b168",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/bootstrap-review/physical-storage-authority-decision-2026-10-20.md",
+      "forkPath": "integrations/kubernetes/docs/bootstrap-review/physical-storage-authority-decision-2026-10-20.md",
+      "sha256": "85a211e1690e8baa746bd7e4c2ecc71466799ad61d6e797fcdfb7b66a890685a",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/cluster-handoff.md",
+      "forkPath": "integrations/kubernetes/docs/cluster-handoff.md",
+      "sha256": "7a3ace136127387258aaee459ea0421803e5ce93de9504cb32dc78d9238e1618",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/current-fences-2026-10-20.md",
+      "forkPath": "integrations/kubernetes/docs/current-fences-2026-10-20.md",
+      "sha256": "67ed3ef44ff3a67778e78e3357c1736618c934c67748ab36535f805bb2e19973",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/current-launch-fence-review-2026-10-19.md",
+      "forkPath": "integrations/kubernetes/docs/current-launch-fence-review-2026-10-19.md",
+      "sha256": "1dae9e7e2397a3376410c46e4ec0098246f5450666846e122e52cf09d74446bf",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/handoff-results-2026-10-13.md",
+      "forkPath": "integrations/kubernetes/docs/handoff-results-2026-10-13.md",
+      "sha256": "92ada869c3f6d04b72bf5ac21af938484e0c72b56206448023f5ee73684e8cf8",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/ACTIVATION-BOUNDARIES.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/ACTIVATION-BOUNDARIES.md",
+      "sha256": "3d6d4e5519346332acc9e96e44e8a49d44bfee164caed65046f70b4c962c4b6a",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/ATOMIC-BACKEND-PROPOSAL.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/ATOMIC-BACKEND-PROPOSAL.md",
+      "sha256": "a98e89999db8a576978ead96de47d7ea3787ec3338099cea7a84aa5de1a6cd7a",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/CANONICAL-OWNER-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/CANONICAL-OWNER-2026-10-21.md",
+      "sha256": "50350d16a37a23919a0b09c11d6b27604ba4343dd0c6a96cdd281e4220aec600",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/CONTROL-CLOSURE-INTEGRATION-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/CONTROL-CLOSURE-INTEGRATION-2026-10-21.md",
+      "sha256": "8dcd9e20def3c20ad839fa2b0cc2f859e109fb1edae3c58ccbe267d0440a5c06",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/CUSTODY-NATIVE-PROPOSAL.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/CUSTODY-NATIVE-PROPOSAL.md",
+      "sha256": "c35e5f16be45cf35bb5e2f0896ae40173ff01b6f560968b6c910d59c145a99e2",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/DAILY-USE-ACCEPTANCE-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/DAILY-USE-ACCEPTANCE-2026-10-21.md",
+      "sha256": "528e976e63e5ea1ba555a649c4f7466e74353d44590a64fca743f3ac37848703",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/DAILY-USE-MECHANISMS.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/DAILY-USE-MECHANISMS.md",
+      "sha256": "f685194ee9af69dea333b5a90434006ca5e5dabd277bac9ffd314c0b8754d98a",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/DESCRIPTOR-SAFE-STORAGE-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/DESCRIPTOR-SAFE-STORAGE-2026-10-21.md",
+      "sha256": "106023a342527bef8d2ea577c3242e979c2496817f4b0d5c60942cdd7e2cbd5d",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/EFFECT-CUSTODY-INTEGRATION-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/EFFECT-CUSTODY-INTEGRATION-2026-10-21.md",
+      "sha256": "570f288a0162caf0be14db340a938f6d68309d28cc47aa39a7073aa55b844baf",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/EFFECT-OWNER-INTEGRATION-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/EFFECT-OWNER-INTEGRATION-2026-10-21.md",
+      "sha256": "dcf7235a43f066a70bbb55b165cd0c325d57749bdc8f55747bd9f23db1e271a5",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/ENFORCEMENT-COMPOSITION-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/ENFORCEMENT-COMPOSITION-2026-10-21.md",
+      "sha256": "a41774dff1381d21ef140cb7b1a593b0a188e43e1e419dbb918429d830b32dbb",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/ENFORCEMENT-DESIGN-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/ENFORCEMENT-DESIGN-2026-10-21.md",
+      "sha256": "f9a3de14915612ad09f445da213c90896b1668855ff0f8c5f10256ede4e4d3ee",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/ENFORCEMENT-FIXTURES-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/ENFORCEMENT-FIXTURES-2026-10-21.md",
+      "sha256": "57dc57cfb859705e19dde0683784ed2dd3ec6eeea63b99c0f725ec9e6ba30e36",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/GROUP-LAUNCH-INTEGRATION-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/GROUP-LAUNCH-INTEGRATION-2026-10-21.md",
+      "sha256": "d951b47a50e933727093f42873ddd85cd8ce17aef951929d1b87be031b16b2a3",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/HISTORY-CONTINUITY-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/HISTORY-CONTINUITY-2026-10-21.md",
+      "sha256": "4f8de5430107cbd8e51dfdc8497a258a65125351bc2dab0faec203abe773bc0e",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/HISTORY-NATIVE-TRANSACTION-DESIGN-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/HISTORY-NATIVE-TRANSACTION-DESIGN-2026-10-21.md",
+      "sha256": "b2f952570f186d95dcfd8d215aae2e31b40797ba6f2ee40640dd633e21ec669e",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/HOSTED-VERIFICATION.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/HOSTED-VERIFICATION.md",
+      "sha256": "3bfce6bedbfaaefc20da49ec3990e048666f4f9fe785a94fd7a8a54feef1e545",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/IMPLEMENTATION-DELTA.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/IMPLEMENTATION-DELTA.md",
+      "sha256": "4ac26d595eb7038a6c424cd53ba7aca1f94d9dbd87dfc5609ef50616ad8981e1",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/NATIVE-COMMIT-OWNER-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/NATIVE-COMMIT-OWNER-2026-10-21.md",
+      "sha256": "16bd13abf379741f6367a06c93f0278299814c937ad21154dab7dc0b4308ed35",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/NATIVE-POSTGRES-FIXTURE-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/NATIVE-POSTGRES-FIXTURE-2026-10-21.md",
+      "sha256": "660820cff8c013a5df166749f2d0bc4742244a06b0e625dca56f7024a9f67c5f",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/NATIVE-TRANSACTION-PORT-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/NATIVE-TRANSACTION-PORT-2026-10-21.md",
+      "sha256": "498223f57e25815fe654783f037c7c0f5c7204d9bd71ccecc4581646d30c38be",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/NATIVE-WRITER-CLOSURE-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/NATIVE-WRITER-CLOSURE-2026-10-21.md",
+      "sha256": "cac5b9c59ad6516834381064f74d85329c8d2b0bb4c5601b7888a3422a3c6813",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/ORDERED-AUTHORITY-INTEGRATION.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/ORDERED-AUTHORITY-INTEGRATION.md",
+      "sha256": "68ccc2ea0c22dcb89b37d544d1f3bb68dbce5cdec16dbee41dee0520a8edbb0d",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/OWNED-AUTHORITY-SERVICES.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/OWNED-AUTHORITY-SERVICES.md",
+      "sha256": "6ee9173b02474f53f79734c6d212856f08f5f66b0497da58600cc3f66f352f5b",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/OWNER-CUSTODY-FOLLOWUP-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/OWNER-CUSTODY-FOLLOWUP-2026-10-21.md",
+      "sha256": "f67926347ece986f029a646515d7e4a89923df320e94555a9179b282ae0f1e4e",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/OWNER-PORT-INTEGRATION-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/OWNER-PORT-INTEGRATION-2026-10-21.md",
+      "sha256": "b030ae03780fe8aa48bfdc2e24fdb3fe95bc812d275ba73776c6364ca417a51f",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/OWNER-TREE-INTEGRATION-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/OWNER-TREE-INTEGRATION-2026-10-21.md",
+      "sha256": "c4b77b29aa4afd4184b753d5cfb352f22fcda26fd2569c3b227f8189599b3b3d",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/PROVIDER-CUT-INTEGRATION-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/PROVIDER-CUT-INTEGRATION-2026-10-21.md",
+      "sha256": "82e7377d1ad44f7aaeac0f44f5c49633a917546b46f4dcf918b8a6e0050be5b2",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/PROVIDER-OWNER-FOLLOWUP-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/PROVIDER-OWNER-FOLLOWUP-2026-10-21.md",
+      "sha256": "57fca5769afc7714d5d5d7b6908ae52c3d4428dd52d126dab79bc04822e4e62c",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/README.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/README.md",
+      "sha256": "fc108dd02ca06c71f3f7af16730f4a977d4b9fb970691294fe43c9f3e2964b57",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/RECOVERY-OWNER-INTEGRATION-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/RECOVERY-OWNER-INTEGRATION-2026-10-21.md",
+      "sha256": "99db51efb1b10ddbdcd5d74d7a8405b6d5f0c6cb1c4ec0df94c82977f9d56cbe",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/ROOT-BOUNDARY-INTEGRATION-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/ROOT-BOUNDARY-INTEGRATION-2026-10-21.md",
+      "sha256": "6a9514a6e7cc0fa8e4626cefbb2edb3d7263728f9f0509994456be4f30469b69",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/ROUTE-CLOSURE-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/ROUTE-CLOSURE-2026-10-21.md",
+      "sha256": "45d01bd9c49a78f6065f91e71e27e5f0d2a9bdd6542783c5cbf2a33330f8f6f6",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/RUNTIME-ENFORCEMENT-PROPOSAL.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/RUNTIME-ENFORCEMENT-PROPOSAL.md",
+      "sha256": "f6da4fd93198b8ef319e8c2ee59ec0d3205268a07bdd2e7f951b9bff079b4477",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/RUNTIME-IMPLEMENTATION-DESIGN-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/RUNTIME-IMPLEMENTATION-DESIGN-2026-10-21.md",
+      "sha256": "bff4b16779eb1da99dbd64137187c2f64bc5fa65b9275af1030d8c577cb068f9",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/RUNTIME-PROVENANCE-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/RUNTIME-PROVENANCE-2026-10-21.md",
+      "sha256": "e75abc4a2a152980bf8d64f3df63925f27155e441b11560979c7c14fbab13de8",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/RUNTIME-PROVENANCE-CONTINUATION-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/RUNTIME-PROVENANCE-CONTINUATION-2026-10-21.md",
+      "sha256": "d2a8906f511f8543dce0edc23c1a8c3a4c043521a4b4e805ae828210c2e46707",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/RUNTIME-PROVENANCE-REQUIREMENTS-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/RUNTIME-PROVENANCE-REQUIREMENTS-2026-10-21.md",
+      "sha256": "9bfd04bdf4c264a7e98991cc51ae60412ad0b779f8a46121cd4214475593bf1a",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/SERVER-INTEGRATION.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/SERVER-INTEGRATION.md",
+      "sha256": "5c00b33e1ce58a4c5030f3be5c230bee8e12fa4c406fa65d95978ada6cad60e2",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/SOLE-OWNER-INTEGRATION-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/SOLE-OWNER-INTEGRATION-2026-10-21.md",
+      "sha256": "76a5ce61d35cca290d63f1c259d7657ff986945afbd8288060924cb0e3dd89f9",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/STORAGE-IMPLEMENTATION-DESIGN-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/STORAGE-IMPLEMENTATION-DESIGN-2026-10-21.md",
+      "sha256": "03adae79ce262cb666a44811911090d11889d95840efc919bbf631dc529a911b",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/STORAGE-ISOLATION-FIXTURE-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/STORAGE-ISOLATION-FIXTURE-2026-10-21.md",
+      "sha256": "14002ef69b9a2aeb4d4f3680c766a4bb587717295729dc0dc12a59b041e507d2",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/STORAGE-PROOF-BOUNDARY.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/STORAGE-PROOF-BOUNDARY.md",
+      "sha256": "9bbee829d81353c2ef6be6475c56352da7d2f53513728fb20672dacaf5eb46c5",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/integrated-review/WRITER-PROFILE-INTEGRATION-2026-10-21.md",
+      "forkPath": "integrations/kubernetes/docs/integrated-review/WRITER-PROFILE-INTEGRATION-2026-10-21.md",
+      "sha256": "2db7050cc191345ab9478a3bea992c3ee769d9ac38a66728cfa221870ae62600",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/local-verification.md",
+      "forkPath": "integrations/kubernetes/docs/local-verification.md",
+      "sha256": "e02d10b604803986f4aa58dfb21b641d719d022feba8527edbb75d1f6d493d23",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/network-probe-cross-node-2026-10-13.txt",
+      "forkPath": "integrations/kubernetes/docs/network-probe-cross-node-2026-10-13.txt",
+      "sha256": "3dea0b0b2d1e0124aac07b45c8c9e57f4afa4b5c1750107d1f8f4b2be1f66f38",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/pod-retirement-fence-review-2026-10-19.md",
+      "forkPath": "integrations/kubernetes/docs/pod-retirement-fence-review-2026-10-19.md",
+      "sha256": "fe0fcfd144ebcae322a9ad35af5aad6775a40d5d0f489f3426fc245b405cd191",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/production-transport-storage-2026-10-20.md",
+      "forkPath": "integrations/kubernetes/docs/production-transport-storage-2026-10-20.md",
+      "sha256": "306c3fe3152c6298ab06a8c71eef3714ae201603f5ed0e3ebc973799265b4e22",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/protected-execution-parallel-2026-10-19.md",
+      "forkPath": "integrations/kubernetes/docs/protected-execution-parallel-2026-10-19.md",
+      "sha256": "e0b08e69a8d9e35ee5d8ef5e3496e664862e503955c1154cf24306264b1e0889",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/recovery-handoff.md",
+      "forkPath": "integrations/kubernetes/docs/recovery-handoff.md",
+      "sha256": "2de383bda1a05e40f92db1c65df9830ec2f279650739f13368afb2e8d2968044",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/runtime-authority-decision-2026-10-20.md",
+      "forkPath": "integrations/kubernetes/docs/runtime-authority-decision-2026-10-20.md",
+      "sha256": "145a695eb36c27b6065472b69c3c5f125c981047e56f57ead87a5c3a53c34a09",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/runtime-current-inventory-2026-10-20.md",
+      "forkPath": "integrations/kubernetes/docs/runtime-current-inventory-2026-10-20.md",
+      "sha256": "af6dcaed4f9581f1c7eea6f330c6eb707c1a8338215cd69aeb1c3bacac0860a5",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/runtime-host-inventory-2026-10-20.md",
+      "forkPath": "integrations/kubernetes/docs/runtime-host-inventory-2026-10-20.md",
+      "sha256": "1b42b8ce466511a6f4cda085b1df2c36c23b6fc8b1380056ffd772a54d1689f9",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": "clusters/homelab/infrastructure/paperclip-evaluation/docs/runtime-retirement-design-2026-10-20.md",
+      "forkPath": "integrations/kubernetes/docs/runtime-retirement-design-2026-10-20.md",
+      "sha256": "c4b4423a5c33a0ce5ac3dc2cc23196141e9a2a96a35f9547ae3991b80e966cc0",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": ".github/workflows/paperclip-admission-fixtures.yaml",
+      "forkPath": "integrations/kubernetes/legacy-workflows/paperclip-admission-fixtures.yaml",
+      "sha256": "45d6b4e82246e01ba301a1c72f8409d1895bec8778808ecc9f16348b6a52e273",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": ".github/workflows/paperclip-custody-crypto.yaml",
+      "forkPath": "integrations/kubernetes/legacy-workflows/paperclip-custody-crypto.yaml",
+      "sha256": "5e67b2e782cb9831eefe736f232b1b0ef08eb7b6007f66cf9a9467c0d18d0e86",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": ".github/workflows/paperclip-evaluation-images.yaml",
+      "forkPath": "integrations/kubernetes/legacy-workflows/paperclip-evaluation-images.yaml",
+      "sha256": "27858648f69619064ef24af28cdb1d27547519d2cf0158d1814fa69b8963bf69",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": ".github/workflows/paperclip-image-pvc-rehearsal.yaml",
+      "forkPath": "integrations/kubernetes/legacy-workflows/paperclip-image-pvc-rehearsal.yaml",
+      "sha256": "12bd614eb2f0d241be73a9a59e63d051a99fb4c101496cdff3813429f89a3a3e",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": ".github/workflows/paperclip-production-contracts.yaml",
+      "forkPath": "integrations/kubernetes/legacy-workflows/paperclip-production-contracts.yaml",
+      "sha256": "c50902122479497d6aeae6f624101cea0edbbf3023a34c500e5d2ae373b99e0b",
+      "generatedCache": false
+    },
+    {
+      "formerHomelabPath": ".github/workflows/paperclip-protected-execution.yaml",
+      "forkPath": "integrations/kubernetes/legacy-workflows/paperclip-protected-execution.yaml",
+      "sha256": "2c4574cd53a5113fa71eb168d5ac44c77de31c202bffae77db255ee5d74918bd",
+      "generatedCache": false
+    }
+  ]
+}

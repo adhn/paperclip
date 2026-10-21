@@ -1,3 +1,6 @@
+import { withCapacityOperation } from "./execution-capacity-lifetime.js";
+import { HttpError } from "../errors.js";
+import { guardCapacityExecution, guardCapacityResolvedExecutionConfig } from "./execution-capacity-context.js";
 import { and, eq } from "drizzle-orm";
 import { agents, companies, type Db } from "@paperclipai/db";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
@@ -29,6 +32,20 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
   async function verify(snapshot: LifecycleAgent): Promise<"complete" | "pending"> {
     const [agent] = await db.select().from(agents).where(and(eq(agents.id, snapshot.id), eq(agents.lifecycleVersion, snapshot.lifecycleVersion)));
     if (!agent) return "pending";
+    try {
+      return await withCapacityOperation(db, { companyId: agent.companyId, agentId: agent.id,
+        environmentId: agent.defaultEnvironmentId ?? "", kind: "lifecycle",
+        key: `${agent.lifecycleOperation?.id ?? "verify"}:${agent.lifecycleVersion}` }, async () => {
+      await guardCapacityExecution(db, { companyId: agent.companyId, agent });
+      return verifyAdmitted(agent);
+      });
+    }
+    catch (error) {
+      if (error instanceof HttpError && (error.details as { code?: string } | undefined)?.code === "capacity_operation_not_admitted") return "pending";
+      throw error;
+    }
+  }
+  async function verifyAdmitted(agent: typeof agents.$inferSelect): Promise<"complete" | "pending"> {
     if (agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "openai_dot") {
       const binding = await dotRunnerBroker(db).bindingForAgent(agent.companyId, agent.id);
       return binding?.status === "ready" && binding.subscriptionVerified && binding.id === agent.adapterConfig.dotBindingId ? "complete" : "pending";
@@ -58,6 +75,7 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
         { ...context, consumerType: "environment", consumerId: environmentId });
       config = { ...config, env: { ...resolved.env, ...parseObject(config.env) } };
     }
+    await guardCapacityResolvedExecutionConfig(db, { companyId: agent.companyId, configuration: config });
     const target = await tests.resolveAdapterTestExecutionContext({ agentId: agent.id, companyId: agent.companyId, adapterType: agent.adapterType, environmentId });
     let status: "released" | "failed" = "failed";
     try {

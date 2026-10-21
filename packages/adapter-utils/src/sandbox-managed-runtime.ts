@@ -159,6 +159,8 @@ export interface SandboxManagedRuntimeAsset {
    * Optional teardown/outbound contribution, invoked once per asset during
    * `restoreWorkspace`. Defaults to a no-op when omitted.
    */
+  /** Host-owned, non-secret recovery recipe for interrupted teardown. */
+  recovery?: Record<string, unknown>;
   restore?: (ctx: SandboxManagedRuntimeAssetRestoreContext) => Promise<void>;
 }
 

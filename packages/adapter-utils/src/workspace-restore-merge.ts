@@ -1,3 +1,4 @@
+import { withExecutionStateMutation } from "./execution-state-journal.js";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { constants as fsConstants, promises as fs } from "node:fs";
@@ -701,7 +702,7 @@ export async function mergeDirectoryWithBaseline(input: {
   const options = { exclude: input.baseline.exclude, ignoredPaths: input.baseline.ignoredPaths, diskBacked: true };
   const source = input.snapshots?.source ?? await captureDirectorySnapshot(input.sourceDir, options);
   try {
-    await withDirectoryMergeLock(input.targetDir, async (canonicalTargetDir) => {
+    await withDirectoryMergeLock(input.targetDir, async (canonicalTargetDir) => withExecutionStateMutation(async () => {
       await input.beforeApply?.();
       // Strict preflight must see excluded children before a directory is
       // replaced. The merge still applies only the filtered source/baseline.
@@ -729,7 +730,7 @@ export async function mergeDirectoryWithBaseline(input: {
         }
         await input.afterApply?.();
       } finally { await disposeDirectorySnapshot(current); }
-    });
+    }));
   } finally { await disposeDirectorySnapshot(source); }
 }
 

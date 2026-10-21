@@ -37,6 +37,7 @@ import {
 } from "./codex-auth-cache.js";
 import { resolveCodexExecutionEngineForRun, testCodexAcpEnvironment } from "./acp.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { checkCodexCliVersionForModel, codexHelloProbeModelRejectionCheck } from "./cli-version.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -203,6 +204,15 @@ async function prepareCodexHelloProbe(input: {
           key: "home",
           localDir: probeHomeLocalDir,
           followSymlinks: true,
+          recovery: { operation: "codex_auth", hostAuthPath: path.join(input.managedAiConnection ? effectiveHome : resolveSharedCodexHomeDir(process.env), "auth.json") },
+          restore: async ({ assetDir, readFile }) => {
+            await copyBackCodexAuth({
+              readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
+              hostAuthPath: path.join(input.managedAiConnection ? effectiveHome : resolveSharedCodexHomeDir(process.env), "auth.json"),
+              log: async () => {},
+              env: process.env,
+            });
+          },
         },
       ],
     });

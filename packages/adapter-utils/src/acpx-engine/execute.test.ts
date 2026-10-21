@@ -28,6 +28,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => {
 import {
   buildAcpxRunSummary,
   createAcpxEngineExecutor,
+  inspectRetainedAcpxCleanup,
   findAncestorBin,
   geminiVersionSupportsNativeAcpFlag,
   parseGeminiVersionParts,
@@ -37,6 +38,8 @@ import {
   summarizeAcpxTurnUsage,
   type AcpxEngineExecutorOptions,
 } from "./execute.js";
+import { AcpxStagedRuntimeCleanupError, AcpxStagingWaitAbortedError, inspectStagingLeaseRetention } from "./run-site-sandbox.js";
+import { AcpxStartupCancellationError, cancellableSandboxStartup } from "./startup-cancellation.js";
 import { ACPX_HANDSHAKE_TIMEOUT_MS } from "./constants.js";
 import { sessionCodec } from "./session-codec.js";
 import { runChildProcess } from "../server-utils.js";
@@ -3967,6 +3970,387 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
     return { root, stateDir, localCwd, remoteCwd, executionTarget };
   }
 
+  it("retains actual executor disposal failure and never launches after a failed managed-home seam", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const original = new Error("private managed-home failure"), cleanup = new Error("private disposal failure");
+    let seamFailed = false, disposalCalls = 0;
+    executionTarget.runner = createLocalSandboxRunner(input => {
+      if (seamFailed && (input.args ?? []).join(" ").includes("rm -rf")) {
+        disposalCalls++; throw cleanup;
+      }
+    });
+    let staged: unknown;
+    const error = await runExecutor({ agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd }, {
+      authToken: "real-run-jwt", executionTarget,
+      prepareRemoteManagedHome: async input => { staged = await input.stage([]); seamFailed = true; throw original; },
+    }).catch(error => error);
+    expect(disposalCalls).toBe(1);
+    expect(error).toBeInstanceOf(AcpxStagedRuntimeCleanupError);
+    expect(AcpxStagedRuntimeCleanupError.inspect(error)?.orderedFailures).toEqual([original, cleanup]);
+    expect(AcpxStagedRuntimeCleanupError.inspect(error)?.stagedRuntime).toBe(staged);
+    expect(startAdapterExecutionTargetPaperclipBridge).not.toHaveBeenCalled();
+    expect(startAdapterExecutionTargetProcessSessionBridge).not.toHaveBeenCalled();
+  });
+
+  it.each(["stop", "restore", "dispose", "successful-stop"] as const)("holds exact staged resources and lease after actual %s uncertainty", async phase => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const effects: string[] = [], failure = new Error("private cleanup outcome");
+    const paperclipStop = vi.fn(() => { effects.push("paperclip-stop"); if ((phase === "stop" || phase === "successful-stop")) throw failure; return Promise.resolve(); });
+    let releaseProcess!: () => void, processStarted!: () => void;
+    const processGate = new Promise<void>(resolve => { releaseProcess = resolve; });
+    const stoppedEntered = new Promise<void>(resolve => { processStarted = resolve; });
+    const processStop = vi.fn(async () => { effects.push("process-stop"); processStarted(); if ((phase === "stop" || phase === "successful-stop")) await processGate; });
+    vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockImplementationOnce(async () => ({ env: {}, stop: paperclipStop }) as never);
+    vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockImplementationOnce(async () => ({ agentCommand: null, stop: processStop }) as never);
+    const stagingLocks = new Map<string, Promise<unknown>>(), stagedRuntimes = new Map();
+    let actualStaged: unknown;
+    const execute = createAcpxEngineExecutor({ stagingLocks, stagedRuntimes, warmHandles: new Map(),
+      prepareRemoteManagedHome: async input => {
+        const stagedRuntime = await input.stage([]); actualStaged = stagedRuntime;
+        return { stagedRuntime,
+          teardown: async () => { effects.push("restore"); return phase === "restore" ? { ok: false, code: "restore_failed" } : { ok: true }; },
+          disposeStaged: async () => { effects.push("dispose"); throw failure; } } as never;
+      },
+      createRuntime: () => { if (phase === "successful-stop") return buildRuntime() as never; throw new Error("original runtime setup failure"); },
+    });
+    const resultPromise = execute({ runId: "held-cleanup-" + phase, agent: { id: "agent-held-" + phase, companyId: "company-held" }, runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd }, context: {}, authToken: "fixture-token", executionTarget,
+      onLog: async () => {}, onMeta: async () => {}, onEvent: async () => {} } as never);
+    if ((phase === "stop" || phase === "successful-stop")) {
+      await stoppedEntered;
+      expect(effects).toEqual(expect.arrayContaining(["paperclip-stop", "process-stop"]));
+      expect(effects).not.toContain("restore"); expect(effects).not.toContain("dispose");
+      expect(stagingLocks.size).toBe(1);
+      releaseProcess();
+    }
+    const result = await resultPromise;
+    expect(result.exitCode).toBe(phase === "successful-stop" ? 0 : 1);
+    expect(result.resultJson?.acpxCleanupPending).toBe(true);
+    if (phase === "successful-stop") expect(result.executionRecovery).toBeUndefined();
+    expect(paperclipStop).toHaveBeenCalledOnce(); expect(processStop).toHaveBeenCalledOnce();
+    expect(stagingLocks.size).toBe(1);
+    expect(actualStaged).toBeTruthy();
+    expect(effects.includes("restore")).toBe((phase !== "stop" && phase !== "successful-stop"));
+    expect(effects.includes("dispose")).toBe(phase === "dispose");
+    if (phase === "dispose") {
+      expect(effects.indexOf("dispose")).toBeGreaterThan(effects.indexOf("restore"));
+      expect(effects.indexOf("restore")).toBeGreaterThan(effects.indexOf("process-stop"));
+    }
+    // No cache publication is inferred from a returned setup error or failed cleanup.
+    expect(stagedRuntimes.size).toBe(0);
+  });
+
+  it("retains original runtime close and both transport failures cumulatively", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const handle = { backendSessionId: "combined-backend", agentSessionId: "combined-agent", runtimeSessionName: "combined-session" };
+    const processFailure = new Error("private process failure"), paperclipFailure = new Error("private paperclip failure");
+    const processStop = vi.fn(async () => { throw processFailure; }), paperclipStop = vi.fn(() => { throw paperclipFailure; });
+    vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockImplementationOnce(async () => ({ env: {}, stop: paperclipStop }) as never);
+    vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockImplementationOnce(async () => ({ agentCommand: null, stop: processStop }) as never);
+    const runtime = { ...buildRuntime(), ensureSession: async () => handle, close: vi.fn(async () => { throw undefined; }) };
+    const inspect = vi.spyOn(AcpxStagedRuntimeCleanupError, "inspect");
+    const restore = vi.fn(async () => ({ ok: true } as const)), dispose = vi.fn(async () => {});
+    const execute = createAcpxEngineExecutor({ stagingLocks: new Map(), warmHandles: new Map(), stagedRuntimes: new Map(), createRuntime: () => runtime as never,
+      prepareRemoteManagedHome: async input => ({ stagedRuntime: await input.stage([]), teardown: restore, disposeStaged: dispose }) });
+    const result = await execute({ runId: "combined-cleanup", agent: { id: "combined-agent", companyId: "combined-company" }, runtime: {}, context: {}, authToken: "fixture-token", executionTarget,
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd }, onLog: async () => {}, onMeta: async () => {}, onEvent: async () => {} } as never);
+    expect(result.exitCode).toBe(0); expect(result.resultJson?.acpxCleanupPending).toBe(true);
+    const original = inspect.mock.results.map(result => result.value).find(facts =>
+      (facts?.resources as { runtime?: unknown } | undefined)?.runtime === runtime)!;
+    const resources = original.resources as { handle: unknown; prepared: object };
+    expect(resources.handle).toBe(handle);
+    const retained = inspectRetainedAcpxCleanup(resources.prepared);
+    expect(retained).toHaveLength(1);
+    expect(retained[0]!.orderedFailures).toEqual([undefined, processFailure, paperclipFailure]);
+    const chain = retained[0]!.resources as { original: AcpxStagedRuntimeCleanupError };
+    const originalFacts = AcpxStagedRuntimeCleanupError.inspect(chain.original)!;
+    expect((originalFacts.resources as { runtime: unknown }).runtime).toBe(runtime);
+    expect((originalFacts.resources as { handle: unknown }).handle).toBe(handle);
+    expect(processStop).toHaveBeenCalledOnce(); expect(paperclipStop).toHaveBeenCalledOnce();
+    expect(runtime.close).toHaveBeenCalledOnce(); expect(restore).not.toHaveBeenCalled(); expect(dispose).not.toHaveBeenCalled();
+    inspect.mockRestore();
+  });
+
+  it.each(["error", "undefined", "logger-throw", "control-throw"] as const)("retains abandoned admitted handshake and exact late handle after %s close failure", async kind => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    let resolveEnsure!: (handle: unknown) => void, closeEntered!: () => void;
+    const admitted = new Promise(resolve => { resolveEnsure = resolve; }), closed = new Promise<void>(resolve => { closeEntered = resolve; });
+    const ensure = trackEnsureSessionCall(() => admitted);
+    const failure = kind === "undefined" ? undefined : new Error("private late handle credential marker");
+    const observerFailure = new Error("private late observer credential marker");
+    let lateControlThrow = false;
+    const unhandled: unknown[] = [], onUnhandled = (error: unknown) => { unhandled.push(error); };
+    process.on("unhandledRejection", onUnhandled);
+    const lateHandle = { backendSessionId: "retained-late-backend", agentSessionId: "retained-late-agent", runtimeSessionName: "retained-late-runtime" };
+    const close = vi.fn(async () => { closeEntered(); throw failure; });
+    const runtime = { ...buildRuntime(), ensureSession: ensure.call, close };
+    const restore = vi.fn(async () => ({ ok: true } as const)), dispose = vi.fn(async () => {}), stagingLocks = new Map<string, Promise<unknown>>();
+    const inspect = vi.spyOn(AcpxStagedRuntimeCleanupError, "inspect"), logs: string[] = [];
+    vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockImplementationOnce(async () => ({ env: {}, stop: async () => {}, readRunDisposition: () => {
+      if (lateControlThrow) throw observerFailure;
+      return { failed: false };
+    } }) as never);
+    vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockImplementationOnce(async () => ({ agentCommand: null, stop: async () => {} }) as never);
+    const execute = createAcpxEngineExecutor({ stagingLocks, warmHandles: new Map(), stagedRuntimes: new Map(), createRuntime: () => runtime as never,
+      prepareRemoteManagedHome: async input => ({ stagedRuntime: await input.stage([]), teardown: restore, disposeStaged: dispose }) });
+    try {
+      vi.useFakeTimers();
+      const resultPromise = execute({ runId: "retained-late-" + kind, agent: { id: "retained-late-agent-" + kind, companyId: "retained-late-company" }, runtime: {}, context: {}, authToken: "fixture-token", executionTarget,
+        config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd }, onLog: (_stream: string, text: string) => {
+          if (kind === "logger-throw" && text.includes("acpx_handshake_late_close_failed")) throw observerFailure;
+          logs.push(text); return Promise.resolve();
+        }, onMeta: async () => {}, onEvent: async () => {} } as never);
+      await advanceHandshakeGuardAfterStart(ensure.started, ACPX_HANDSHAKE_TIMEOUT_MS + 1);
+      const result = await resultPromise;
+      expect(result.errorCode).toBe("acpx_handshake_timeout"); expect(result.resultJson?.acpxCleanupPending).toBe(true);
+      expect(stagingLocks.size).toBe(1); expect(restore).not.toHaveBeenCalled(); expect(dispose).not.toHaveBeenCalled(); expect(close).not.toHaveBeenCalled();
+      lateControlThrow = kind === "control-throw";
+      resolveEnsure(lateHandle);
+      if (kind !== "control-throw") await closed;
+      await vi.advanceTimersByTimeAsync(0);
+      if (kind === "control-throw") expect(close).not.toHaveBeenCalled();
+      else { expect(close).toHaveBeenCalledOnce(); expect(close).toHaveBeenCalledWith(expect.objectContaining({ handle: lateHandle })); }
+      const original = inspect.mock.results.map(result => result.value).find(facts => (facts?.resources as { runtime?: unknown } | undefined)?.runtime === runtime)!;
+      const prepared = (original.resources as { prepared: object }).prepared;
+      const facts = inspectRetainedAcpxCleanup(prepared)[0]!;
+      expect(facts.orderedFailures[0]).toBeInstanceOf(Error); expect(facts.orderedFailures.at(-1)).toBe(kind === "logger-throw" || kind === "control-throw" ? observerFailure : failure);
+      const chain = facts.resources as { subsequent: AcpxStagedRuntimeCleanupError };
+      const late = AcpxStagedRuntimeCleanupError.inspect(chain.subsequent)!;
+      expect((late.resources as { lateHandle: unknown }).lateHandle).toBe(lateHandle);
+      expect((late.resources as { admittedHandshake: unknown }).admittedHandshake).toBe(admitted);
+      expect((late.resources as { runtime: unknown }).runtime).toBe(runtime);
+      expect(stagingLocks.size).toBe(1); expect(restore).not.toHaveBeenCalled(); expect(dispose).not.toHaveBeenCalled();
+      expect(logs.join(" ") + JSON.stringify(result)).not.toContain("private late handle credential marker");
+      expect(logs.join(" ") + JSON.stringify(result)).not.toContain("private late observer credential marker");
+      expect(unhandled).toEqual([]);
+    } finally { vi.useRealTimers(); inspect.mockRestore(); process.off("unhandledRejection", onUnhandled); }
+  }, 30_000);
+
+  it("retains admitted startup RPC and stage lease after stop callback acknowledgment without replay", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const originalRunner = executionTarget.runner;
+    let stageEntered = false, resolveRpc!: (value: { exitCode: number; signal: null; timedOut: boolean; stdout: string; stderr: string }) => void, entered!: () => void;
+    const rpc = new Promise<{ exitCode: number; signal: null; timedOut: boolean; stdout: string; stderr: string }>(resolve => { resolveRpc = resolve; });
+    const called = new Promise<void>(resolve => { entered = resolve; });
+    let admittedCalls = 0;
+    executionTarget.runner = { ...originalRunner, execute: input => {
+      if (stageEntered) { admittedCalls++; entered(); return rpc; }
+      return originalRunner.execute(input);
+    } };
+    const abort = new AbortController(), stop = vi.fn(async () => {}), stagingLocks = new Map<string, Promise<unknown>>();
+    const restore = vi.fn(async () => ({ ok: true } as const)), dispose = vi.fn(async () => {}), createRuntime = vi.fn(() => buildRuntime() as never);
+    const execute = createAcpxEngineExecutor({ stagingLocks, warmHandles: new Map(), stagedRuntimes: new Map(), createRuntime,
+      prepareRemoteManagedHome: async input => { stageEntered = true; return { stagedRuntime: await input.stage([]), teardown: restore, disposeStaged: dispose }; } });
+    const pending = execute({ runId: "admitted-startup-rpc", agent: { id: "admitted-startup-agent", companyId: "admitted-startup-company" }, runtime: {}, context: {}, authToken: "fixture-token", executionTarget,
+      signal: abort.signal, stopRemoteStartup: stop,
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd }, onLog: async () => {}, onMeta: async () => {}, onEvent: async () => {} } as never);
+    void pending.catch(() => {});
+    await called; abort.abort(new Error("private admitted startup reason"));
+    const surfaced = await pending.catch(error => error);
+    expect(surfaced).toBeInstanceOf(AcpxStagedRuntimeCleanupError);
+    const error = (AcpxStagedRuntimeCleanupError.inspect(surfaced)!.resources as { finishFailure: AcpxStartupCancellationError }).finishFailure;
+    expect(error).toBeInstanceOf(AcpxStartupCancellationError);
+    expect(stop).toHaveBeenCalledOnce(); expect(stagingLocks.size).toBe(1);
+    expect(restore).not.toHaveBeenCalled(); expect(dispose).not.toHaveBeenCalled(); expect(createRuntime).not.toHaveBeenCalled();
+    const operation = AcpxStartupCancellationError.inspect(error)!.operations.find(record => record.originalRpc === rpc)!;
+    expect(operation.outcome.status).toBe("pending"); expect(admittedCalls).toBe(1);
+    const release = AcpxStartupCancellationError.inspect(error)!.recoveryLeases[0]!;
+    expect(release).toBeTypeOf("function");
+    const held = inspectStagingLeaseRetention(release);
+    expect(held).toBeInstanceOf(AcpxStagedRuntimeCleanupError);
+    // The exact callback failure remains reachable through retained cumulative
+    // wrappers; their shape changes as independently owned cleanup is added.
+    const visited = new Set<unknown>();
+    const findOriginal = (node: unknown): unknown => {
+      if (node === error) return node;
+      if (!(node instanceof AcpxStagedRuntimeCleanupError) || visited.has(node)) return undefined;
+      visited.add(node);
+      const facts = AcpxStagedRuntimeCleanupError.inspect(node)!;
+      const resources = facts.resources as Record<string, unknown> | undefined;
+      for (const child of [...facts.orderedFailures, ...Object.values(resources ?? {})]) {
+        const exact = findOriginal(child); if (exact === error) return exact;
+      }
+      return undefined;
+    };
+    expect(findOriginal(held)).toBe(error);
+    release(); expect(stagingLocks.size).toBe(1);
+    const value = { exitCode: 0, signal: null, timedOut: false, stdout: "private late staged runtime result", stderr: "" } as const;
+    resolveRpc(value);
+    await vi.waitFor(() => expect(AcpxStartupCancellationError.inspect(error)!.operations.find(record => record.originalRpc === rpc)?.outcome).toEqual({ status: "fulfilled", value }));
+    expect(stagingLocks.size).toBe(1); expect(admittedCalls).toBe(1);
+    expect(AcpxStartupCancellationError.inspect(error)!.recoveryLeases).toEqual([release]);
+    release(); expect(inspectStagingLeaseRetention(release)).toBe(held); expect(stagingLocks.size).toBe(1);
+    expect(restore).not.toHaveBeenCalled(); expect(dispose).not.toHaveBeenCalled(); expect(createRuntime).not.toHaveBeenCalled();
+    expect(JSON.stringify(error)).not.toContain("private admitted startup reason");
+    expect(JSON.stringify(error)).not.toContain("private late staged runtime result");
+  }, 30_000);
+
+  it.each(["typed", "raw-stop", "raw-undefined"] as const)("retains successful build custody before %s startup finish failure", async kind => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const abort = new AbortController(), reason = new Error("private finished startup reason");
+    const stopFailure = kind === "raw-undefined" ? undefined : new Error("private sole stop failure"), bridgeFailure = new Error("private independent bridge stop");
+    const stop = vi.fn(async () => { if (kind !== "typed") throw stopFailure; });
+    const processStop = vi.fn(async () => { if (kind !== "typed") throw bridgeFailure; }), paperclipStop = vi.fn(async () => {});
+    const typedInspect = vi.spyOn(AcpxStartupCancellationError, "inspect"), cleanupInspect = vi.spyOn(AcpxStagedRuntimeCleanupError, "inspect");
+    vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockImplementationOnce(async () => ({ env: {}, stop: paperclipStop }) as never);
+    vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockImplementationOnce(async () => { abort.abort(reason); return { agentCommand: null, stop: processStop } as never; });
+    const stagingLocks = new Map<string, Promise<unknown>>(), restore = vi.fn(async () => ({ ok: true } as const)), dispose = vi.fn(async () => {}), createRuntime = vi.fn(() => buildRuntime() as never);
+    const execute = createAcpxEngineExecutor({ stagingLocks, warmHandles: new Map(), stagedRuntimes: new Map(), createRuntime,
+      prepareRemoteManagedHome: async input => ({ stagedRuntime: await input.stage([]), teardown: restore, disposeStaged: dispose }) });
+    const logs: string[] = [];
+    try {
+      const result = await execute({ runId: "finish-held-" + kind, agent: { id: "finish-agent-" + kind, companyId: "finish-company" }, runtime: {}, context: {}, authToken: "fixture-token", executionTarget,
+        signal: abort.signal, stopRemoteStartup: stop, config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+        onLog: async (_stream: string, text: string) => { logs.push(text); }, onMeta: async () => {}, onEvent: async () => {} } as never);
+      expect(result.exitCode).toBe(1); expect(result.resultJson?.acpxCleanupPending).toBe(true);
+      expect(createRuntime).not.toHaveBeenCalled(); expect(restore).not.toHaveBeenCalled(); expect(dispose).not.toHaveBeenCalled(); expect(stagingLocks.size).toBe(1);
+      expect(processStop).toHaveBeenCalledOnce(); expect(paperclipStop).toHaveBeenCalledOnce(); expect(stop).toHaveBeenCalledOnce();
+      let release: () => void;
+      if (kind === "typed") {
+        const helperError = typedInspect.mock.calls[0]![0];
+        expect(AcpxStartupCancellationError.inspect(helperError)?.originalReason).toBe(reason);
+        release = AcpxStartupCancellationError.inspect(helperError)!.recoveryLeases[0]!;
+      } else {
+        const original = cleanupInspect.mock.results.map(result => result.value).find(facts => (facts?.resources as { startupRecovery?: unknown } | undefined)?.startupRecovery)!;
+        expect(original.orderedFailures).toEqual([stopFailure]);
+        const recovery = (original.resources as { startupRecovery: ReturnType<typeof cancellableSandboxStartup> }).startupRecovery;
+        const facts = recovery.inspect();
+        expect(facts.stopOutcome).toEqual({ status: "rejected", reason: stopFailure });
+        expect(facts.operations.length).toBeGreaterThan(0); expect(facts.operations.every(record => record.outcome.status === "fulfilled")).toBe(true);
+        release = facts.recoveryLeases[0]!;
+      }
+      expect(release!).toBeTypeOf("function"); expect(inspectStagingLeaseRetention(release!)).toBeInstanceOf(AcpxStagedRuntimeCleanupError);
+      release!(); expect(stagingLocks.size).toBe(1);
+      expect(logs.join(" ") + JSON.stringify(result)).not.toContain("private sole stop failure");
+    } finally { typedInspect.mockRestore(); cleanupInspect.mockRestore(); }
+  }, 30_000);
+
+  it("retains acquired stage lease when admitted bridge startup cancels before build returns", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const originalRunner = executionTarget.runner;
+    let bridgeRpc = false, resolveRpc!: (value: { exitCode: number; signal: null; timedOut: boolean; stdout: string; stderr: string }) => void, entered!: () => void;
+    const rpc = new Promise<{ exitCode: number; signal: null; timedOut: boolean; stdout: string; stderr: string }>(resolve => { resolveRpc = resolve; });
+    const called = new Promise<void>(resolve => { entered = resolve; });
+    executionTarget.runner = { ...originalRunner, execute: input => { if (bridgeRpc) { entered(); return rpc; } return originalRunner.execute(input); } };
+    const paperclipStop = vi.fn(async () => {}), abort = new AbortController(), stop = vi.fn(async () => {});
+    vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockImplementationOnce(async () => ({ env: {}, stop: paperclipStop }) as never);
+    vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockImplementationOnce(async input => {
+      bridgeRpc = true;
+      const runner = (input.target as { runner: { execute: (input: { command: string }) => Promise<unknown> } }).runner;
+      await runner.execute({ command: "fixture admitted bridge initialization" });
+      return { agentCommand: null, stop: async () => {} } as never;
+    });
+    const stagingLocks = new Map<string, Promise<unknown>>(), restore = vi.fn(async () => ({ ok: true } as const)), dispose = vi.fn(async () => {}), createRuntime = vi.fn(() => buildRuntime() as never);
+    const execute = createAcpxEngineExecutor({ stagingLocks, warmHandles: new Map(), stagedRuntimes: new Map(), createRuntime,
+      prepareRemoteManagedHome: async input => ({ stagedRuntime: await input.stage([]), teardown: restore, disposeStaged: dispose }) });
+    const pending = execute({ runId: "bringup-startup-rpc", agent: { id: "bringup-startup-agent", companyId: "bringup-startup-company" }, runtime: {}, context: {}, authToken: "fixture-token", executionTarget,
+      signal: abort.signal, stopRemoteStartup: stop, config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd }, onLog: async () => {}, onMeta: async () => {}, onEvent: async () => {} } as never);
+    void pending.catch(() => {}); await called; abort.abort();
+    const surfaced = await pending.catch(error => error);
+    expect(surfaced).toBeInstanceOf(AcpxStagedRuntimeCleanupError);
+    const helperError = (AcpxStagedRuntimeCleanupError.inspect(surfaced)!.resources as { finishFailure: AcpxStartupCancellationError }).finishFailure;
+    expect(helperError).toBeInstanceOf(AcpxStartupCancellationError);
+    const release = AcpxStartupCancellationError.inspect(helperError)!.recoveryLeases[0]!;
+    expect(release).toBeTypeOf("function"); expect(stagingLocks.size).toBe(1);
+    const held = inspectStagingLeaseRetention(release) as AcpxStagedRuntimeCleanupError;
+    const resources = AcpxStagedRuntimeCleanupError.inspect(held)!.resources as { startupRecovery: ReturnType<typeof cancellableSandboxStartup> };
+    expect(resources.startupRecovery.inspect().operations.find(record => record.originalRpc === rpc)?.outcome.status).toBe("pending");
+    expect(paperclipStop).toHaveBeenCalledOnce(); expect(restore).not.toHaveBeenCalled(); expect(dispose).not.toHaveBeenCalled(); expect(createRuntime).not.toHaveBeenCalled();
+    const value = { exitCode: 0, signal: null, timedOut: false, stdout: "late bridge result", stderr: "" } as const; resolveRpc(value);
+    await vi.waitFor(() => expect(resources.startupRecovery.inspect().operations.find(record => record.originalRpc === rpc)?.outcome).toEqual({ status: "fulfilled", value }));
+    release(); expect(stagingLocks.size).toBe(1); expect(inspectStagingLeaseRetention(release)).toBe(held);
+  }, 30_000);
+
+  it("does not invent a finish-failure lease hold when no startup RPC was submitted", async () => {
+    const { stateDir, localCwd, remoteCwd, executionTarget } = await setupRemoteSandbox();
+    vi.mocked(prepareAdapterExecutionTargetRuntime).mockResolvedValueOnce({ workspaceRemoteDir: remoteCwd, runtimeRootDir: "/fixture-no-rpc-runtime", assetDirs: {}, additionalSourceDirs: {}, additionalSourceFailures: [], restoreWorkspace: async () => {} } as never);
+    const abort = new AbortController(), stopFailure = new Error("private no-RPC stop failure");
+    vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockImplementationOnce(async () => ({ env: {}, stop: async () => {} }) as never);
+    vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockImplementationOnce(async () => { abort.abort(); return { agentCommand: null, stop: async () => {} } as never; });
+    const stagingLocks = new Map<string, Promise<unknown>>(), restore = vi.fn(async () => ({ ok: true } as const)), dispose = vi.fn(async () => {}), createRuntime = vi.fn(() => buildRuntime() as never);
+    const execute = createAcpxEngineExecutor({ stagingLocks, warmHandles: new Map(), stagedRuntimes: new Map(), createRuntime,
+      prepareRemoteManagedHome: async input => ({ stagedRuntime: await input.stage([]), teardown: restore, disposeStaged: dispose }) });
+    const logs: string[] = [];
+    const result = await execute({ runId: "finish-no-rpc", agent: { id: "finish-no-rpc-agent", companyId: "finish-no-rpc-company" }, runtime: {}, context: {}, authToken: "fixture-token", executionTarget,
+      signal: abort.signal, stopRemoteStartup: async () => { throw stopFailure; }, config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      onLog: async (_stream: string, text: string) => { logs.push(text); }, onMeta: async () => {}, onEvent: async () => {} } as never);
+    expect(result.exitCode).toBe(1); expect(result.resultJson?.acpxCleanupPending).toBeUndefined();
+    expect(stagingLocks.size).toBe(0); expect(restore).toHaveBeenCalledOnce(); expect(dispose).toHaveBeenCalledOnce(); expect(createRuntime).not.toHaveBeenCalled();
+    expect(logs.join(" ") + JSON.stringify(result)).not.toContain(stopFailure.message);
+  });
+
+  it.each(["before-transport", "after-bringup"] as const)("retains acquired resources after actual %s property callback failure", async phase => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const abort = new AbortController(), failure = new Error("private acquired property callback failure"), stop = vi.fn(async () => {});
+    const restore = vi.fn(async () => ({ ok: true } as const)), dispose = vi.fn(async () => {}), paperclipStop = vi.fn(async () => {}), processStop = vi.fn(async () => {});
+    const stagingLocks = new Map<string, Promise<unknown>>(), createRuntime = vi.fn(() => buildRuntime() as never);
+    if (phase === "after-bringup") {
+      vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockImplementationOnce(async () => ({ env: {}, stop: paperclipStop }) as never);
+      vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockImplementationOnce(async () => {
+        const handle = { stop: processStop };
+        Object.defineProperty(handle, "agentCommand", { get: () => { abort.abort(new Error("fixture acquired cancellation")); throw failure; } });
+        return handle as never;
+      });
+    }
+    const execute = createAcpxEngineExecutor({ stagingLocks, warmHandles: new Map(), stagedRuntimes: new Map(), createRuntime,
+      prepareRemoteManagedHome: async input => {
+        const stagedRuntime = await input.stage([]);
+        if (phase === "before-transport") Object.defineProperty(stagedRuntime, "additionalSourceDirs", { get: () => { abort.abort(new Error("fixture acquired cancellation")); throw failure; } });
+        return { stagedRuntime, teardown: restore, disposeStaged: dispose };
+      } });
+    const surfaced = await execute({ runId: "acquired-callback-" + phase, agent: { id: "acquired-agent-" + phase, companyId: "acquired-company" }, runtime: {}, context: {}, authToken: "fixture-token", executionTarget,
+      signal: abort.signal, stopRemoteStartup: stop, config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd }, onLog: async () => {}, onMeta: async () => {}, onEvent: async () => {} } as never).catch(error => error);
+    expect(surfaced).toBeInstanceOf(AcpxStagedRuntimeCleanupError);
+    const facts = AcpxStagedRuntimeCleanupError.inspect(surfaced)!;
+    const resources = facts.resources as { originalBuildFailure: AcpxStagedRuntimeCleanupError; finishFailure: AcpxStartupCancellationError };
+    expect(AcpxStagedRuntimeCleanupError.inspect(resources.originalBuildFailure)?.orderedFailures[0]).toBe(failure);
+    const release = AcpxStartupCancellationError.inspect(resources.finishFailure)!.recoveryLeases[0]!;
+    expect(release).toBeTypeOf("function"); expect(inspectStagingLeaseRetention(release)).toBe(resources.originalBuildFailure);
+    expect(stagingLocks.size).toBe(1); release(); expect(stagingLocks.size).toBe(1);
+    expect(restore).not.toHaveBeenCalled(); expect(dispose).not.toHaveBeenCalled(); expect(createRuntime).not.toHaveBeenCalled(); expect(stop).toHaveBeenCalledOnce();
+    expect(paperclipStop).toHaveBeenCalledTimes(phase === "after-bringup" ? 1 : 0); expect(processStop).toHaveBeenCalledTimes(phase === "after-bringup" ? 1 : 0);
+    expect(JSON.stringify(surfaced)).not.toContain(failure.message);
+  }, 30_000);
+
+  it.each(["bridge", "restore", "dispose"] as const)("retains acquired cleanup when cancellation arrives during %s callback", async phase => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const abort = new AbortController(), original = new Error("private original assembly failure");
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    let entered = false;
+    const pause = async () => { entered = true; await gate; };
+    const restore = vi.fn(async () => { if (phase === "restore") await pause(); return { ok: true } as const; });
+    const dispose = vi.fn(async () => { if (phase === "dispose") await pause(); });
+    const paperclipStop = vi.fn(async () => { if (phase === "bridge") await pause(); });
+    const processStop = vi.fn(async () => {}), locks = new Map<string, Promise<unknown>>();
+    vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockImplementationOnce(async () => ({ env: {}, stop: paperclipStop }) as never);
+    vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockImplementationOnce(async () => {
+      const handle = { stop: processStop };
+      Object.defineProperty(handle, "agentCommand", { get: () => { throw original; } }); return handle as never;
+    });
+    const execute = createAcpxEngineExecutor({ stagingLocks: locks, warmHandles: new Map(), stagedRuntimes: new Map(),
+      createRuntime: vi.fn(() => buildRuntime() as never), prepareRemoteManagedHome: async input => ({ stagedRuntime: await input.stage([]), teardown: restore, disposeStaged: dispose }) });
+    const pending = execute({ runId: "cleanup-race-" + phase, agent: { id: "cleanup-race-" + phase, companyId: "cleanup-race-company" }, runtime: {}, context: {}, authToken: "fixture-token", executionTarget,
+      signal: abort.signal, stopRemoteStartup: async () => {}, config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd }, onLog: async () => {}, onMeta: async () => {}, onEvent: async () => {} } as never);
+    void pending.catch(() => {});
+    await vi.waitFor(() => expect(entered).toBe(true)); abort.abort(); finish();
+    const error = await pending.catch(error => error);
+    expect(error).toBeInstanceOf(AcpxStagedRuntimeCleanupError);
+    const outer = AcpxStagedRuntimeCleanupError.inspect(error)!.resources as { originalBuildFailure: AcpxStagedRuntimeCleanupError; finishFailure: AcpxStartupCancellationError };
+    const held = outer.originalBuildFailure;
+    expect(AcpxStagedRuntimeCleanupError.inspect(held)!.orderedFailures[0]).toBe(original);
+    const release = AcpxStartupCancellationError.inspect(outer.finishFailure)!.recoveryLeases[0]!;
+    expect(inspectStagingLeaseRetention(release)).toBe(held); release(); expect(locks.size).toBe(1);
+    expect(restore).toHaveBeenCalledTimes(phase === "bridge" ? 0 : 1);
+    expect(dispose).toHaveBeenCalledTimes(phase === "dispose" ? 1 : 0);
+    expect(paperclipStop).toHaveBeenCalledOnce(); expect(processStop).toHaveBeenCalledOnce();
+    if (phase !== "bridge") {
+      const callbacks = (AcpxStagedRuntimeCleanupError.inspect(held)!.resources as { cleanupCallbacks: Array<{ kind: string; promise: Promise<unknown>; outcome: { status: string } }> }).cleanupCallbacks;
+      expect(callbacks.at(-1)?.kind).toBe(phase); expect(callbacks.at(-1)?.outcome.status).toBe("fulfilled");
+      expect(callbacks.at(-1)?.promise).toBeInstanceOf(Promise);
+    }
+  }, 30_000);
+
   it("test_remote_seam_receives_adapter_agnostic_context", async () => {
     const { stateDir, localCwd, remoteCwd, executionTarget } = await setupRemoteSandbox();
     let captured: Record<string, unknown> | null = null;
@@ -6642,7 +7026,7 @@ describe("ACPX engine run lifecycle corrections (F1: settle every failure after 
     expect(result.exitCode).toBe(1);
     if (failure === "dispatch") {
       expect(startTurn).toHaveBeenCalledTimes(1);
-      expect(result.executionRecovery).toBeUndefined();
+      if (phase === "successful-stop") expect(result.executionRecovery).toBeUndefined();
       expect(result.usageComplete).toBe(false);
     } else {
       expect(result.resultJson?.phase).toBe("prepare_turn");
@@ -7260,7 +7644,7 @@ describe("ACPX engine run lifecycle corrections (F3: one teardown error policy)"
     expect(order).toEqual(["close", "collect"]);
   });
 
-  it("test_teardown_continues_after_one_teardown_step_fails", async () => {
+  it("retains runtime close uncertainty while independently stopping both bridges", async () => {
     const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
     const { paperclipStops, processStops, anyStopped } = stubBridges();
     const stagingLocks = new Map<string, Promise<unknown>>();
@@ -7275,7 +7659,8 @@ describe("ACPX engine run lifecycle corrections (F3: one teardown error policy)"
           ensureSession: async () => okHandle,
           startTurn: () => throwingTurn(),
           // A failing teardown step must not stop the later teardown steps.
-          close: async () => {
+          close: async ({ handle }: { handle: unknown }) => {
+            expect(handle).toBe(okHandle);
             throw new Error("close boom");
           },
         }) as never,
@@ -7293,17 +7678,18 @@ describe("ACPX engine run lifecycle corrections (F3: one teardown error policy)"
 
     expect(result.exitCode).toBe(1);
     expect(collectInstructions).not.toHaveBeenCalled();
-    // The close failure did not stop the bridge stops or the lease release.
+    // Both independent bridge stops still run; unknown runtime close keeps custody.
     expect(anyStopped(paperclipStops)).toBe(true);
     expect(anyStopped(processStops)).toBe(true);
-    expect(stagingLocks.size).toBe(0);
+    expect(stagingLocks.size).toBe(1);
+    expect(result.resultJson?.acpxCleanupPending).toBe(true);
     // The close failure was recorded, not silently dropped.
     expect(
-      logs.some((entry) => entry.stream === "stderr" && entry.text.includes('teardown step "runtime-close" failed')),
+      logs.some((entry) => entry.stream === "stderr" && entry.text.includes("ACP staged runtime cleanup requires recovery inspection.")),
     ).toBe(true);
   });
 
-  it("restores managed home and releases the lease when instruction collection rejects", async () => {
+  it.each([false, true])("retains managed home and same-key lease when instruction collection rejects (startup stop callback %s)", async stopEnabled => {
     const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
     const { paperclipStops, processStops, anyStopped } = stubBridges();
     const stagingLocks = new Map<string, Promise<unknown>>();
@@ -7325,12 +7711,50 @@ describe("ACPX engine run lifecycle corrections (F3: one teardown error policy)"
       }),
     } as never);
     expect(result.exitCode).toBe(1);
-    expect(order).toEqual(["close", "collect", "restore"]);
+    expect(order).toEqual(["close", "collect"]);
     expect(anyStopped(paperclipStops)).toBe(true);
     expect(anyStopped(processStops)).toBe(true);
-    expect(stagingLocks.size).toBe(0);
-    expect(logs.some(text => text.includes('teardown step "instruction-collection" failed: Instruction collection failed'))).toBe(true);
+    expect(stagingLocks.size).toBe(1);
+    expect(result.resultJson?.acpxCleanupPending).toBe(true);
+    // This settlement sink intentionally classifies every sync-back exception;
+    // the closed diagnostic does not assert that restoration was attempted.
+    expect(logs).toContain('[paperclip] ACPX teardown step "settlement-sync_back" failed: the restore failed\n');
     expect(logs.some(text => text.includes("/private/test-instructions"))).toBe(false);
+    const stageCalls = vi.mocked(prepareAdapterExecutionTargetRuntime).mock.calls.length;
+    const abort = new AbortController(), reason = new Error("private queued startup credential marker");
+    const stopRemoteStartup = vi.fn(async () => {});
+    const originalLease = [...stagingLocks.values()][0];
+    let successorReturned = false;
+    const successor = execute({ runId: "collector-held-successor",
+      ...remoteArgs(stateDir, localCwd, executionTarget, { signal: abort.signal, ...(stopEnabled ? { stopRemoteStartup } : {}) }),
+    } as never);
+    void successor.then(() => { successorReturned = true; }, () => { successorReturned = true; });
+    await vi.waitFor(() => expect([...stagingLocks.values()][0]).not.toBe(originalLease));
+    expect(vi.mocked(prepareAdapterExecutionTargetRuntime).mock.calls.length).toBe(stageCalls);
+    expect(order).toEqual(["close", "collect"]);
+    abort.abort(reason);
+    // Withdraw only the queued successor; the original uncertain cleanup owns
+    // the unchanged predecessor lease and may not admit another stage.
+    const error = await successor.catch(error => error);
+    if (stopEnabled) {
+      expect(error).toBeInstanceOf(AcpxStagedRuntimeCleanupError);
+      const helperError = (AcpxStagedRuntimeCleanupError.inspect(error)!.resources as { finishFailure: AcpxStartupCancellationError }).finishFailure;
+      expect(helperError).toBeInstanceOf(AcpxStartupCancellationError);
+      expect(AcpxStartupCancellationError.inspect(helperError)?.originalReason).toBe(reason);
+      expect(AcpxStartupCancellationError.inspect(helperError)?.recoveryLeases).toEqual([]);
+      expect(stopRemoteStartup).toHaveBeenCalledOnce();
+    } else {
+      expect(error).toBeInstanceOf(AcpxStagingWaitAbortedError);
+      expect(AcpxStagingWaitAbortedError.inspect(error)).toBe(reason);
+      expect(stopRemoteStartup).not.toHaveBeenCalled();
+    }
+    const publicFields = JSON.stringify(error) + Object.getOwnPropertyNames(error).map(key => String(error[key])).join(" ");
+    expect(publicFields).not.toContain(reason.message);
+    expect(logs.join(" ")).not.toContain(reason.message);
+    expect(successorReturned).toBe(true);
+    expect(stagingLocks.size).toBe(1);
+    expect(vi.mocked(prepareAdapterExecutionTargetRuntime).mock.calls.length).toBe(stageCalls);
+
   });
 
   it("test_staging_lease_releases_in_finally_on_every_exit_path", async () => {
@@ -7496,7 +7920,8 @@ describe("ACPX engine run lifecycle corrections (F3: one teardown error policy)"
         ({
           ensureSession: async () => okHandle,
           startTurn: () => throwingTurn(),
-          close: async () => {
+          close: async ({ handle }: { handle: unknown }) => {
+            expect(handle).toBe(okHandle);
             throw new Error("close boom");
           },
         }) as never,
@@ -8328,7 +8753,7 @@ describe("ACPX startup handshake guard and late-completion fence", () => {
         const { closeSpy, resolveEnsure, resultPromise } = await runAbandonedHandshake();
         resolveEnsure(lateHandle);
         await resultPromise;
-        expect(closeSpy).toHaveBeenCalledTimes(1);
+        await vi.waitFor(() => expect(closeSpy).toHaveBeenCalledTimes(1));
         expect(closeSpy).toHaveBeenCalledWith(expect.objectContaining({ handle: lateHandle }));
       }
 
@@ -8341,7 +8766,7 @@ describe("ACPX startup handshake guard and late-completion fence", () => {
         resolveEnsure(lateHandle);
         await Promise.resolve();
         await Promise.resolve();
-        expect(closeSpy).toHaveBeenCalledTimes(1);
+        await vi.waitFor(() => expect(closeSpy).toHaveBeenCalledTimes(1));
         expect(closeSpy).toHaveBeenCalledWith(expect.objectContaining({ handle: lateHandle }));
       }
     } finally {
@@ -8711,9 +9136,7 @@ describe("ACPX startup handshake guard and late-completion fence", () => {
       // sandbox child forged a late handle. The engine's own close attempt on
       // that handle then rejects with a value carrying a secret-like marker.
       resolveEnsure(lateHandle);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      await vi.waitFor(() => expect(logs.some(entry => entry.text.includes("acpx_handshake_late_close_failed"))).toBe(true));
 
       for (const entry of logs) {
         expect(entry.text).not.toContain(secretMarker);
@@ -8727,4 +9150,55 @@ describe("ACPX startup handshake guard and late-completion fence", () => {
       vi.useRealTimers();
     }
   }, 10000);
+});
+
+
+describe("host cleanup uncertainty preserves independent provider outcome", () => {
+  it.each(["close", "collector"] as const)("keeps successful host outcome with held %s and refuses the known failed handle", async phase => {
+    const root = await makeTempRoot(), handle = { backendSessionId: "held-host-backend", agentSessionId: "held-host-agent", runtimeSessionName: "held-host-runtime" };
+    const marker = "private host cleanup original";
+    const close = vi.fn(async () => { if (phase === "close") throw new Error(marker); });
+    const collect = vi.fn(async () => { if (phase === "collector") throw undefined; });
+    const turns = vi.fn(() => ({ events: (async function* () { yield { type: "done", stopReason: "end_turn" }; })(),
+      result: Promise.resolve({ status: "completed", stopReason: "end_turn" }), cancel: async () => {} }));
+    const runtime = { ensureSession: async () => handle, startTurn: turns, close };
+    const execute = createAcpxEngineExecutor({ warmHandles: new Map(), stagedRuntimes: new Map(), stagingLocks: new Map(), createRuntime: () => runtime as never });
+    const logs: string[] = [];
+    const args = { agent: { id: "held-host-agent-" + phase, companyId: "held-host-company" }, runtime: {}, context: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state"), cwd: root },
+      onProviderStopped: collect, onLog: async (_stream: string, text: string) => { logs.push(text); }, onMeta: async () => {}, onEvent: async () => {} };
+    const result = await execute({ ...args, runId: "host-uncertain-" + phase } as never);
+    expect(result.exitCode).toBe(0); expect(result.resultJson?.acpxCleanupPending).toBe(true);
+    expect(result.executionRecovery).toBeUndefined(); expect(close).toHaveBeenCalledOnce();
+    expect(collect).toHaveBeenCalledTimes(phase === "close" ? 0 : 1);
+    expect(logs.join(" ")).not.toContain(marker);
+    {
+      const next = await execute({ ...args, runId: "host-uncertain-successor" } as never);
+      expect(next.exitCode).toBe(1); expect(next.resultJson?.acpxCleanupPending).toBe(true);
+      expect(turns).toHaveBeenCalledOnce(); expect(close).toHaveBeenCalledOnce();
+    }
+  });
+});
+
+
+describe("same actual runtime pending close excludes new admission", () => {
+  it("refuses a same-factory runtime before another ensureSession while original close remains pending", async () => {
+    const root = await makeTempRoot(); let release!: () => void, entered!: () => void;
+    const closeGate = new Promise<void>(resolve => { release = resolve; }), closeEntered = new Promise<void>(resolve => { entered = resolve; });
+    const handle = { backendSessionId: "pending-close-backend", agentSessionId: "pending-close-agent", runtimeSessionName: "pending-close-session" };
+    const ensure = vi.fn(async () => handle), turn = vi.fn(buildRuntime().startTurn), close = vi.fn(async () => { entered(); await closeGate; });
+    const runtime = { ...buildRuntime(), ensureSession: ensure, startTurn: turn, close };
+    const execute = createAcpxEngineExecutor({ warmHandles: new Map(), stagedRuntimes: new Map(), stagingLocks: new Map(), createRuntime: () => runtime as never });
+    const args = { agent: { id: "pending-factory-agent", companyId: "pending-factory-company" }, runtime: {}, context: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state"), cwd: root }, onLog: async () => {}, onMeta: async () => {}, onEvent: async () => {} };
+    const first = execute({ ...args, runId: "pending-factory-first" } as never);
+    await closeEntered;
+    try {
+      const next = await execute({ ...args, runId: "pending-factory-successor" } as never);
+      expect(next.exitCode).toBe(1); expect(next.resultJson?.acpxCleanupPending).toBe(true);
+      expect(ensure).toHaveBeenCalledOnce(); expect(turn).toHaveBeenCalledOnce(); expect(close).toHaveBeenCalledOnce();
+    } finally { release(); }
+    const result = await first;
+    expect(result.exitCode).toBe(0); expect(result.resultJson?.acpxCleanupPending).toBeUndefined();
+  });
 });

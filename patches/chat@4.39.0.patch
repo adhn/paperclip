@@ -1,0 +1,25 @@
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -814,12 +814,21 @@
+       }
+     );
+     const results = await Promise.allSettled(shutdownPromises);
++    const failures = [];
+     for (const result of results) {
+       if (result.status === "rejected") {
++        failures.push(result.reason);
+         this.logger.error("Adapter disconnect failed", result.reason);
+       }
+     }
+-    await this._stateAdapter.disconnect();
++    try {
++      await this._stateAdapter.disconnect();
++    } catch (error) {
++      failures.push(error);
++    }
++    if (failures.length) {
++      throw new AggregateError(failures, "Chat shutdown is incomplete");
++    }
+     this.initialized = false;
+     this.initPromise = null;
+     this.logger.info("Chat instance shut down");

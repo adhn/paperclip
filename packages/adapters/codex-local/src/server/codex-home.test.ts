@@ -14,6 +14,7 @@ import {
   seedManagedCodexHome,
   stageCodexHomeForSync,
   writeManagedCodexMcpConfig,
+  writeApiKeyAuthJson,
 } from "./codex-home.js";
 
 describe("mergeManagedCodexMcpGateways", () => {
@@ -222,6 +223,137 @@ describe("codex managed home", () => {
     }
   });
 
+});
+
+describe("prepared auth replacement", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  for (const previous of ["file", "symlink"] as const) {
+    for (const failure of ["prepare", "rename"] as const) {
+      it(`preserves the previous ${previous} when alias ${failure} fails and retries`, async () => {
+        const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-auth-replace-"));
+        const target = path.join(home, "auth.json");
+        const source = path.join(home, "shared.json");
+        const oldSource = path.join(home, "old.json");
+        try {
+          await fs.writeFile(source, "new");
+          await fs.writeFile(oldSource, "old");
+          if (previous === "file") await fs.writeFile(target, "old");
+          else await fs.symlink(oldSource, target);
+          const error = Object.assign(new Error("injected I/O failure"), { code: "EIO" });
+          if (failure === "prepare") vi.spyOn(fs, "symlink").mockRejectedValueOnce(error);
+          else vi.spyOn(fs, "rename").mockRejectedValueOnce(error);
+          await expect(ensureSymlink(target, source)).rejects.toMatchObject({ code: "EIO" });
+          expect(await fs.readFile(target, "utf8")).toBe("old");
+          expect((await fs.lstat(target)).isSymbolicLink()).toBe(previous === "symlink");
+          expect((await fs.readdir(home)).filter((name) => name.startsWith(".paperclip-auth-"))).toEqual([]);
+          await ensureSymlink(target, source);
+          expect(await fs.readlink(target)).toBe(source);
+          expect(await fs.readFile(target, "utf8")).toBe("new");
+        } finally {
+          vi.restoreAllMocks();
+          await fs.rm(home, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+
+  for (const failure of ["write", "chmod", "rename"] as const) {
+    it(`preserves the shared auth alias on API-key ${failure} failure and retries`, async () => {
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-auth-replace-"));
+      const target = path.join(home, "auth.json");
+      const source = path.join(home, "shared.json");
+      try {
+        await fs.writeFile(source, "shared-original");
+        await fs.symlink(source, target);
+        const error = Object.assign(new Error("injected I/O failure"), { code: "EIO" });
+        if (failure === "write") vi.spyOn(fs, "writeFile").mockRejectedValueOnce(error);
+        else if (failure === "chmod") vi.spyOn(fs, "chmod").mockRejectedValueOnce(error);
+        else vi.spyOn(fs, "rename").mockRejectedValueOnce(error);
+        await expect(writeApiKeyAuthJson(home, "key")).rejects.toMatchObject({ code: "EIO" });
+        expect(await fs.readlink(target)).toBe(source);
+        expect(await fs.readFile(source, "utf8")).toBe("shared-original");
+        expect((await fs.readdir(home)).filter((name) => name.startsWith(".paperclip-auth-"))).toEqual([]);
+        await writeApiKeyAuthJson(home, "key");
+        expect((await fs.lstat(target)).isFile()).toBe(true);
+        expect(JSON.parse(await fs.readFile(target, "utf8"))).toEqual({ OPENAI_API_KEY: "key" });
+        expect((await fs.stat(target)).mode & 0o777).toBe(0o600);
+        expect(await fs.readFile(source, "utf8")).toBe("shared-original");
+      } finally {
+        vi.restoreAllMocks();
+        await fs.rm(home, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("preserves existing API auth when shared auth is absent", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-auth-replace-"));
+    try {
+      const targetHome = path.join(home, "managed");
+      await fs.mkdir(targetHome);
+      await fs.writeFile(path.join(targetHome, "auth.json"), '{"OPENAI_API_KEY":"old"}');
+      await seedManagedCodexHome(targetHome, { CODEX_HOME: path.join(home, "missing") }, async () => {});
+      expect(await fs.readFile(path.join(targetHome, "auth.json"), "utf8")).toBe('{"OPENAI_API_KEY":"old"}');
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps prior API auth until replacement key preparation succeeds", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-auth-replace-"));
+    try {
+      const targetHome = path.join(home, "managed");
+      const shared = path.join(home, "shared");
+      await fs.mkdir(targetHome);
+      await fs.mkdir(shared);
+      const target = path.join(targetHome, "auth.json");
+      await fs.writeFile(target, '{"OPENAI_API_KEY":"old"}');
+      await fs.writeFile(path.join(shared, "auth.json"), '{"OPENAI_API_KEY":"shared"}');
+      vi.spyOn(fs, "writeFile").mockRejectedValueOnce(Object.assign(new Error("injected"), { code: "ENOSPC" }));
+      await expect(seedManagedCodexHome(targetHome, { CODEX_HOME: shared }, async () => {}, { apiKey: "new" }))
+        .rejects.toMatchObject({ code: "ENOSPC" });
+      expect((await fs.lstat(target)).isFile()).toBe(true);
+      expect(await fs.readFile(target, "utf8")).toBe('{"OPENAI_API_KEY":"old"}');
+    } finally {
+      vi.restoreAllMocks();
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces cleanup failure after a committed replacement without undoing it", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-auth-replace-"));
+    try {
+      const target = path.join(home, "auth.json");
+      await fs.writeFile(target, '{"OPENAI_API_KEY":"old"}');
+      vi.spyOn(fs, "rm").mockRejectedValueOnce(Object.assign(new Error("injected cleanup failure"), { code: "EACCES" }));
+      await expect(writeApiKeyAuthJson(home, "new")).rejects.toMatchObject({ code: "EACCES" });
+      expect(JSON.parse(await fs.readFile(target, "utf8"))).toEqual({ OPENAI_API_KEY: "new" });
+      const residue = (await fs.readdir(home)).filter((name) => name.startsWith(".paperclip-auth-"));
+      expect(residue).toHaveLength(1);
+      expect(await fs.readdir(path.join(home, residue[0]!))).toEqual([]);
+      await writeApiKeyAuthJson(home, "new");
+      expect(JSON.parse(await fs.readFile(target, "utf8"))).toEqual({ OPENAI_API_KEY: "new" });
+      // A retry does not claim ownership of another invocation's staging path.
+      expect((await fs.readdir(home)).filter((name) => name.startsWith(".paperclip-auth-"))).toEqual(residue);
+    } finally {
+      vi.restoreAllMocks();
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to replace an auth directory with an API key", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-auth-replace-"));
+    try {
+      const target = path.join(home, "auth.json");
+      await fs.mkdir(target);
+      await fs.writeFile(path.join(target, "keep"), "operator state");
+      await expect(writeApiKeyAuthJson(home, "key")).rejects.toThrow();
+      expect(await fs.readFile(path.join(target, "keep"), "utf8")).toBe("operator state");
+      expect((await fs.readdir(home)).filter((name) => name.startsWith(".paperclip-auth-"))).toEqual([]);
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("isManagedCodexHomePath", () => {

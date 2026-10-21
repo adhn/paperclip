@@ -1,3 +1,4 @@
+import type { SlackInstallRawResponse } from "./install-recovery.js";
 import { slackRegistrationErrorMessage } from "@paperclipai/shared";
 import { unprocessable } from "../../../../errors.js";
 export const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -15,7 +16,7 @@ export const knownProviderErrors: Record<string, string> = {
 
 const timeoutMs = 20_000;
 export function createSlackSetupClient(fetchImpl: typeof fetch = fetch) {
-  return async function api(method: string, fields: Record<string, string> | FormData, bearer?: string, requiredScopes?: readonly string[]) {
+  return async function api(method: string, fields: Record<string, string> | FormData, bearer?: string, requiredScopes?: readonly string[], observeRaw?: (raw: SlackInstallRawResponse) => Promise<void>) {
     const response = await fetchImpl(`https://slack.com/api/${method}`, {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(timeoutMs),
       headers: { ...(fields instanceof FormData ? {} : { "content-type": "application/x-www-form-urlencoded" }), ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) },
@@ -26,18 +27,29 @@ export function createSlackSetupClient(fetchImpl: typeof fetch = fetch) {
     const chunks: Uint8Array[] = [];
     let size = 0;
     if (reader) {
+      // Array occupancy records failure even when a transport throws undefined.
+      const failures: unknown[] = [];
       try {
         while (true) {
           const part = await reader.read();
           if (part.done) break;
           size += part.value.byteLength;
-          if (size > 1_048_576) { await reader.cancel(); throw providerFailure("slack_provider_failure"); }
+          if (size > 1_048_576) {
+            failures.push(providerFailure("slack_provider_failure"));
+            try { await reader.cancel(); } catch (error) { failures.push(error); }
+            break;
+          }
           chunks.push(part.value);
         }
-      } finally { reader.releaseLock(); }
+      } catch (error) { failures.push(error); }
+      try { reader.releaseLock(); } catch (error) { failures.push(error); }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) throw new AggregateError(failures, "Slack response read and cleanup failed");
     }
+    const bytes = Buffer.concat(chunks);
+    if (observeRaw) await observeRaw({ status: response.status, headers: Object.fromEntries(response.headers), bodyBase64: bytes.toString("base64") });
     let result: Record<string, unknown>;
-    try { result = object(JSON.parse(Buffer.concat(chunks).toString("utf8"))); }
+    try { result = object(JSON.parse(bytes.toString("utf8"))); }
     catch { result = {}; }
     if (!response.ok || result.ok !== true) {
       const code = knownProviderErrors[String(result.error)] ?? (response.status === 429 ? "slack_setup_rate_limited" : "slack_provider_failure");

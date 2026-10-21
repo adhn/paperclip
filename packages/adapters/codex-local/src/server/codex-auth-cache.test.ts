@@ -1,7 +1,10 @@
+import fs from "node:fs/promises";
+import { AsyncResource } from "node:async_hooks";
+import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   assertAccountHomeCacheDirStillValid,
@@ -29,6 +32,7 @@ describe("codex auth cache store", () => {
   const cleanupDirs: string[] = [];
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
@@ -230,6 +234,92 @@ describe("codex auth cache store", () => {
     const resolveEntry =
       (env: NodeJS.ProcessEnv) => (accountId: string) =>
         resolveCodexAuthCacheEntryPath(env, accountId, "company-a");
+
+    it.each(["write", "sync", "close", "rename"] as const)("preserves prior host on prepared publication %s failure and closes once", async failure => {
+      const hostAuth = subscriptionAuth({ accountId: "acct-x", lastRefresh: OLDER, marker: "host" });
+      const { env, sharedHomeAuthPath } = await stageHostAndCache({ hostAuth, cacheAuthByAccount: { "acct-x": subscriptionAuth({ accountId: "acct-x", lastRefresh: NEWER, marker: "cache" }) } });
+      const realOpen = fs.open.bind(fs), realRename = fs.rename.bind(fs); let closes = 0;
+      vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        const handle = await realOpen(...args);
+        if (String(args[0]).includes(".vend-")) {
+          const close = handle.close.bind(handle);
+          if (failure === "write") handle.writeFile = async () => { throw new Error("fixture write failed"); };
+          if (failure === "sync") handle.sync = async () => { throw new Error("fixture sync failed"); };
+          handle.close = async () => { closes++; await close(); if (failure === "close") throw new Error("fixture close failed"); };
+        }
+        return handle;
+      });
+      if (failure === "rename") vi.spyOn(fs, "rename").mockImplementation(async (from, to) => { if (String(from).includes(".vend-")) throw new Error("fixture rename failed"); return realRename(from, to); });
+      await expect(selectVendCredential(sharedHomeAuthPath, resolveEntry(env), () => {}, env)).rejects.toThrow();
+      expect(await readFile(sharedHomeAuthPath, "utf8")).toBe(hostAuth); expect(closes).toBe(1);
+      expect((await readdir(path.dirname(sharedHomeAuthPath))).filter(name => name.includes(".vend-"))).toEqual([]);
+    });
+
+    it("preserves preparation error before close and independently attempted cleanup errors", async () => {
+      const { env, sharedHomeAuthPath } = await stageHostAndCache({ hostAuth: subscriptionAuth({ accountId: "acct-x", lastRefresh: OLDER }), cacheAuthByAccount: { "acct-x": subscriptionAuth({ accountId: "acct-x", lastRefresh: NEWER }) } });
+      const first = new Error("fixture sync failed"), second = new Error("fixture close failed"), third = new Error("fixture cleanup failed");
+      const realOpen = fs.open.bind(fs), realRm = fs.rm.bind(fs); let closes = 0;
+      vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        const handle = await realOpen(...args); if (String(args[0]).includes(".vend-")) {
+          const close = handle.close.bind(handle); handle.sync = async () => { throw first; };
+          handle.close = async () => { closes++; await close(); throw second; };
+        } return handle;
+      });
+      vi.spyOn(fs, "rm").mockImplementation(async (target, options) => { if (String(target).includes(".vend-")) throw third; return realRm(target, options); });
+      const error = await selectVendCredential(sharedHomeAuthPath, resolveEntry(env), () => {}, env).catch(error => error);
+      expect(error.errors[0].errors).toEqual([first, second]); expect(error.errors[1]).toBe(third); expect(closes).toBe(1);
+    });
+
+    it("preserves an original throw undefined while still closing the preparation", async () => {
+      const { env, sharedHomeAuthPath } = await stageHostAndCache({ hostAuth: subscriptionAuth({ accountId: "acct-x", lastRefresh: OLDER }), cacheAuthByAccount: { "acct-x": subscriptionAuth({ accountId: "acct-x", lastRefresh: NEWER }) } });
+      const realOpen = fs.open.bind(fs); let closes = 0;
+      vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        const handle = await realOpen(...args); if (String(args[0]).includes(".vend-")) {
+          const close = handle.close.bind(handle); handle.writeFile = async () => { throw undefined; };
+          handle.close = async () => { closes++; await close(); };
+        } return handle;
+      });
+      const outcome = await selectVendCredential(sharedHomeAuthPath, resolveEntry(env), () => {}, env).then(() => ({ rejected: false }), error => ({ rejected: true, error }));
+      expect(outcome).toEqual({ rejected: true, error: undefined }); expect(closes).toBe(1);
+    });
+
+    it("never reports vended after rename with failed directory flush and finishes barrier on kept-host retry", async () => {
+      const hostAuth = subscriptionAuth({ accountId: "acct-x", lastRefresh: OLDER, marker: "host" }), cacheAuth = subscriptionAuth({ accountId: "acct-x", lastRefresh: NEWER, marker: "cache" });
+      const { env, sharedHomeAuthPath } = await stageHostAndCache({ hostAuth, cacheAuthByAccount: { "acct-x": cacheAuth } });
+      const realOpen = fs.open.bind(fs); let fail = true, directorySyncs = 0;
+      vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        const handle = await realOpen(...args); if (String(args[0]) === path.dirname(sharedHomeAuthPath)) {
+          const sync = handle.sync.bind(handle); handle.sync = async () => { directorySyncs++; if (fail) throw new Error("fixture directory sync failed"); await sync(); };
+        } return handle;
+      });
+      await expect(selectVendCredential(sharedHomeAuthPath, resolveEntry(env), () => {}, env)).rejects.toThrow();
+      expect(await readFile(sharedHomeAuthPath, "utf8")).toBe(cacheAuth);
+      await rm(resolveEntry(env)("acct-x")); // Missing cache cannot bypass the current-host barrier.
+      const before = directorySyncs;
+      await expect(selectVendCredential(sharedHomeAuthPath, resolveEntry(env), () => {}, env)).rejects.toThrow("directory sync failed");
+      expect(directorySyncs).toBeGreaterThan(before); fail = false;
+      expect(await selectVendCredential(sharedHomeAuthPath, resolveEntry(env), () => {}, env)).toBe("kept-host");
+      expect(await readFile(sharedHomeAuthPath, "utf8")).toBe(cacheAuth);
+    });
+
+    it("anchors cache selection to actual host identity after waiting for the real directory lock", async () => {
+      const a = subscriptionAuth({ accountId: "acct-a", lastRefresh: OLDER }), b = subscriptionAuth({ accountId: "acct-b", lastRefresh: OLDER });
+      const newerB = subscriptionAuth({ accountId: "acct-b", lastRefresh: NEWER, marker: "new-b" });
+      const { env, sharedHomeAuthPath } = await stageHostAndCache({ hostAuth: a, cacheAuthByAccount: { "acct-a": subscriptionAuth({ accountId: "acct-a", lastRefresh: NEWER }), "acct-b": newerB } });
+      const resource = new AsyncResource("codex-vend-waiter"); let observed!: () => void;
+      const firstRead = new Promise<void>(resolve => { observed = resolve; }), realRead = fs.readFile.bind(fs); let reads = 0;
+      vi.spyOn(fs, "readFile").mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+        const value = await realRead(...args); if (String(args[0]) === sharedHomeAuthPath && ++reads === 1) observed(); return value;
+      });
+      let operation!: Promise<unknown>;
+      try {
+        await withDirectoryMergeLock(path.dirname(sharedHomeAuthPath), async () => {
+          operation = resource.runInAsyncScope(() => selectVendCredential(sharedHomeAuthPath, resolveEntry(env), () => {}, env));
+          await firstRead; await writeFile(sharedHomeAuthPath, b);
+        }, env);
+        expect(await operation).toBe("vended"); expect(await readFile(sharedHomeAuthPath, "utf8")).toBe(newerB);
+      } finally { resource.emitDestroy(); }
+    });
 
     it("vend refreshes the host identity when the cached copy is strictly newer for the same identity", async () => {
       const { env, sharedHomeAuthPath } = await stageHostAndCache({

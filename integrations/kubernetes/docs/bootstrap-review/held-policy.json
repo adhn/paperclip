@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "mode": "held",
+  "instance": "k8s:cd5cb949-7607-4a46-92c2-ccc62703baf2/namespace:ae7ea502-3093-40bd-b1ac-f3a703182a8d/controller-pvc:8b058100-96b3-4a77-b90a-d7dec2939f40/database:paperclip_eval",
+  "pendingLimit": 4,
+  "legacyOwners": [
+    {
+      "companyId": "2d7fa2c0-750d-4146-b03d-ca1440966532",
+      "agentId": "562ed16a-c09c-4660-92d7-bba077643d7f",
+      "environmentId": "ea65b3f9-5fd1-4b18-a6c1-6553e4e3bde3",
+      "runner": "k8s:cd5cb949-7607-4a46-92c2-ccc62703baf2/namespace:ae7ea502-3093-40bd-b1ac-f3a703182a8d/pvc:9cde2513-319c-43a5-bd46-0f387dad743f/ssh:SHA256:C3+Gz6113ylMI20r3KBYIIm+hQXfnW8jJou2KNeyXP0",
+      "providerAccount": "claude:account:af13771c2f5e82ec7086431173934c3487eaf75ec9cced7d154395ff321b65ba",
+      "workspace": "k8s:cd5cb949-7607-4a46-92c2-ccc62703baf2/namespace:ae7ea502-3093-40bd-b1ac-f3a703182a8d/pvc:9cde2513-319c-43a5-bd46-0f387dad743f/ssh:SHA256:C3+Gz6113ylMI20r3KBYIIm+hQXfnW8jJou2KNeyXP0/workspace-family:/home/node/workspaces",
+      "session": "claude:account:af13771c2f5e82ec7086431173934c3487eaf75ec9cced7d154395ff321b65ba/session-family",
+      "credential": "claude:account:af13771c2f5e82ec7086431173934c3487eaf75ec9cced7d154395ff321b65ba/credential-family"
+    },
+    {
+      "companyId": "2d7fa2c0-750d-4146-b03d-ca1440966532",
+      "agentId": "e32dca0d-7ae5-478c-a000-cc7b8d921d55",
+      "environmentId": "b2d089fa-adfc-454a-a2ef-8d9914f9f198",
+      "runner": "k8s:cd5cb949-7607-4a46-92c2-ccc62703baf2/namespace:ae7ea502-3093-40bd-b1ac-f3a703182a8d/pvc:7b9bf09b-83f3-4254-a499-ee1ff419b4b9/ssh:SHA256:ZXcyCLjh57mwGac+iiWG2krxVvgFjp9j+PHZVCN7M6E",
+      "providerAccount": "codex:account:ea5ef2cabd37947a43b58f074430fdf4192f65db4da0f16875dd9973e3cb1c50",
+      "workspace": "k8s:cd5cb949-7607-4a46-92c2-ccc62703baf2/namespace:ae7ea502-3093-40bd-b1ac-f3a703182a8d/pvc:7b9bf09b-83f3-4254-a499-ee1ff419b4b9/ssh:SHA256:ZXcyCLjh57mwGac+iiWG2krxVvgFjp9j+PHZVCN7M6E/workspace-family:/home/node/workspaces",
+      "session": "codex:account:ea5ef2cabd37947a43b58f074430fdf4192f65db4da0f16875dd9973e3cb1c50/session-family",
+      "credential": "codex:account:ea5ef2cabd37947a43b58f074430fdf4192f65db4da0f16875dd9973e3cb1c50/credential-family"
+    },
+    {
+      "companyId": "2d7fa2c0-750d-4146-b03d-ca1440966532",
+      "agentId": "348d6a8a-250e-467c-aa19-cd2f3e2d8c26",
+      "environmentId": "b2d089fa-adfc-454a-a2ef-8d9914f9f198",
+      "runner": "k8s:cd5cb949-7607-4a46-92c2-ccc62703baf2/namespace:ae7ea502-3093-40bd-b1ac-f3a703182a8d/pvc:7b9bf09b-83f3-4254-a499-ee1ff419b4b9/ssh:SHA256:ZXcyCLjh57mwGac+iiWG2krxVvgFjp9j+PHZVCN7M6E",
+      "providerAccount": "codex:account:ea5ef2cabd37947a43b58f074430fdf4192f65db4da0f16875dd9973e3cb1c50",
+      "workspace": "k8s:cd5cb949-7607-4a46-92c2-ccc62703baf2/namespace:ae7ea502-3093-40bd-b1ac-f3a703182a8d/pvc:7b9bf09b-83f3-4254-a499-ee1ff419b4b9/ssh:SHA256:ZXcyCLjh57mwGac+iiWG2krxVvgFjp9j+PHZVCN7M6E/workspace-family:/home/node/workspaces",
+      "session": "codex:account:ea5ef2cabd37947a43b58f074430fdf4192f65db4da0f16875dd9973e3cb1c50/session-family",
+      "credential": "codex:account:ea5ef2cabd37947a43b58f074430fdf4192f65db4da0f16875dd9973e3cb1c50/credential-family"
+    },
+    {
+      "companyId": "2d7fa2c0-750d-4146-b03d-ca1440966532",
+      "agentId": "22898651-e5f1-4566-b3d0-ae6b237f4a8c",
+      "environmentId": "b2d089fa-adfc-454a-a2ef-8d9914f9f198",
+      "runner": "k8s:cd5cb949-7607-4a46-92c2-ccc62703baf2/namespace:ae7ea502-3093-40bd-b1ac-f3a703182a8d/pvc:7b9bf09b-83f3-4254-a499-ee1ff419b4b9/ssh:SHA256:ZXcyCLjh57mwGac+iiWG2krxVvgFjp9j+PHZVCN7M6E",
+      "providerAccount": "codex:account:ea5ef2cabd37947a43b58f074430fdf4192f65db4da0f16875dd9973e3cb1c50",
+      "workspace": "k8s:cd5cb949-7607-4a46-92c2-ccc62703baf2/namespace:ae7ea502-3093-40bd-b1ac-f3a703182a8d/pvc:7b9bf09b-83f3-4254-a499-ee1ff419b4b9/ssh:SHA256:ZXcyCLjh57mwGac+iiWG2krxVvgFjp9j+PHZVCN7M6E/workspace-family:/home/node/workspaces",
+      "session": "codex:account:ea5ef2cabd37947a43b58f074430fdf4192f65db4da0f16875dd9973e3cb1c50/session-family",
+      "credential": "codex:account:ea5ef2cabd37947a43b58f074430fdf4192f65db4da0f16875dd9973e3cb1c50/credential-family"
+    },
+    {
+      "companyId": "2d7fa2c0-750d-4146-b03d-ca1440966532",
+      "agentId": "be500ba7-65ad-4a72-8369-474eb2522274",
+      "environmentId": "b2d089fa-adfc-454a-a2ef-8d9914f9f198",
+      "runner": "k8s:cd5cb949-7607-4a46-92c2-ccc62703baf2/namespace:ae7ea502-3093-40bd-b1ac-f3a703182a8d/pvc:7b9bf09b-83f3-4254-a499-ee1ff419b4b9/ssh:SHA256:ZXcyCLjh57mwGac+iiWG2krxVvgFjp9j+PHZVCN7M6E",
+      "providerAccount": "codex:account:ea5ef2cabd37947a43b58f074430fdf4192f65db4da0f16875dd9973e3cb1c50",
+      "workspace": "k8s:cd5cb949-7607-4a46-92c2-ccc62703baf2/namespace:ae7ea502-3093-40bd-b1ac-f3a703182a8d/pvc:7b9bf09b-83f3-4254-a499-ee1ff419b4b9/ssh:SHA256:ZXcyCLjh57mwGac+iiWG2krxVvgFjp9j+PHZVCN7M6E/workspace-family:/home/node/workspaces",
+      "session": "codex:account:ea5ef2cabd37947a43b58f074430fdf4192f65db4da0f16875dd9973e3cb1c50/session-family",
+      "credential": "codex:account:ea5ef2cabd37947a43b58f074430fdf4192f65db4da0f16875dd9973e3cb1c50/credential-family"
+    }
+  ]
+}

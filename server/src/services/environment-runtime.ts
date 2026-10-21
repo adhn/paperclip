@@ -1,3 +1,5 @@
+import { currentCapacityOperation, guardCapacityExecution } from "./execution-capacity-context.js";
+import { sshLeaseStopReleaseMetadata } from "./heartbeat/ssh-lease-stop.js";
 import { allowLegacyShutdownWorkspaceCleanup, legacyShutdownWorkspaceResourceProtected } from "./legacy-shutdown-workspace-settlement.js";
 import { beginIdleTrackedWork } from "./task-admission.js";
 import { hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
@@ -1200,6 +1202,14 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
       }
 
       const { remoteCwd } = await ensureSshWorkspaceReady(parsed.config);
+      const owner = currentCapacityOperation(db);
+      if (owner?.leaseId) {
+        if (owner.companyId !== input.companyId || owner.environmentId !== input.environment.id ||
+            (owner.runId ?? null) !== (input.heartbeatRunId ?? null)) throw new Error("capacity_lease_owner_changed");
+        const lease = await environmentsSvc.getLeaseById(owner.leaseId);
+        if (!lease || lease.status !== "active") throw new Error("capacity_lease_owner_changed");
+        return lease;
+      }
       return await environmentsSvc.acquireLease({
         companyId: input.companyId,
         environmentId: input.environment.id,
@@ -1223,7 +1233,14 @@ function createSshEnvironmentDriver(db: Db): EnvironmentRuntimeDriver {
     },
 
     async releaseRunLease(input) {
-      return await environmentsSvc.releaseLease(input.lease.id, input.status);
+      const owner = currentCapacityOperation(db);
+      if (owner?.leaseId === input.lease.id) {
+        // The capacity lifetime owns release after every helper and all three
+        // restoration results settle. Native terminal status is insufficient.
+        return input.lease;
+      }
+      return await environmentsSvc.releaseLease(input.lease.id, input.status,
+        sshLeaseStopReleaseMetadata(input.lease));
     },
 
     async realizeWorkspace(input) {
@@ -4019,6 +4036,10 @@ export function environmentRuntimeService(
        */
       assertCompanyBinding?: boolean;
     }): Promise<EnvironmentRuntimeLeaseRecord> {
+      // Snapshot the host-selected target before the guard's asynchronous reads.
+      input = { ...input, environment: structuredClone(input.environment) };
+      await guardCapacityExecution(db, { companyId: input.companyId,
+        runId: input.heartbeatRunId, environmentId: input.environment.id, environment: input.environment });
       if (input.environment.status !== "active") {
         throw new Error(`Environment "${input.environment.name}" is not active.`);
       }

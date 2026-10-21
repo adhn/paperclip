@@ -118,6 +118,9 @@ export class PhotonRecoveryTransport {
     this.client =
       client ??
       new Client(authentication.address, credentials.createSsl(), {
+        // SDK retry:false does not govern grpc-js service-config, hedged or
+        // transparent retries. Recovery must not silently create another call.
+        "grpc.enable_retries": 0,
         "grpc.max_receive_message_length": MAX_ATTACHMENT_BYTES + 1024 * 1024,
       });
   }

@@ -1,3 +1,7 @@
+import { isDeepStrictEqual } from "node:util";
+import { readSlackCredentialAuthority } from "./slack-credential-authority.js";
+import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
+import { assertSlackSetupConfigurationUse } from "../connectors/slack/setup/new-use-guard.js";
 import { preparePhotonConfiguration, createPhotonConfiguration } from "./imessage-photon/setup.js";
 import { slackRuntimeConfig } from "./slack/setup.js";
 import { createTelegramSetup } from "./telegram/setup.js";
@@ -161,6 +165,39 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
     const record = await endpointRecord(endpointId);
     if (!record) throw notFound("Chat endpoint not found");
     const endpoint = record.endpoint;
+    const originalControl = structuredClone({ endpoint: record.endpoint, connection: record.connection, refs: record.credentialSecretRefs });
+    let storedSlackAuthority: Awaited<ReturnType<typeof readSlackCredentialAuthority>> | undefined;
+    const currentSlackRecord = async () => {
+      const current = await endpointRecord(endpointId);
+      if (!current || current.endpoint.provider !== "slack" || current.endpoint.companyId !== endpoint.companyId ||
+          !isDeepStrictEqual({ endpoint: current.endpoint, connection: current.connection, refs: current.credentialSecretRefs }, originalControl))
+        throw conflict("Slack setup ownership changed");
+      return current;
+    };
+    const providerUse = async <T>(operation: (current: EndpointRecord) => Promise<T>): Promise<T> => {
+      if (endpoint.provider !== "slack") return operation(record);
+      // Hold only across the actual provider boundary. Lifecycle shutdown joins
+      // callbacks which may themselves need this company credential lock.
+      return withAccountHomeSecretMutationLock(undefined, endpoint.companyId, async () => {
+        await credentialLease.assertOwned();
+        const current = await currentSlackRecord();
+        await assertSlackSetupConfigurationUse({ companyId: endpoint.companyId, endpointId, actorUserId });
+        if (storedSlackAuthority && !isDeepStrictEqual(await readSlackCredentialAuthority(db, current), storedSlackAuthority))
+          throw conflict("Slack stored credential authority changed");
+        return operation(current);
+      });
+    };
+    const resolveBoundCredentials = async (resolve: (current: EndpointRecord) => Promise<Record<string, string>>) => {
+      if (endpoint.provider !== "slack") return resolve(record);
+      return providerUse(async current => {
+        const before = structuredClone(await readSlackCredentialAuthority(db, current));
+        const value = await resolve(current);
+        const after = await currentSlackRecord();
+        if (!isDeepStrictEqual(before, await readSlackCredentialAuthority(db, after))) throw conflict("Slack stored credential authority changed");
+        storedSlackAuthority = before;
+        return value;
+      });
+    };
     if (input.action === "pause") {
       if (endpoint.status !== "active") {
         throw conflict("Only an active chat connection can be paused", {
@@ -237,12 +274,12 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
           },
         );
       }
-      let credentials = await resolveCredentials(endpoint).catch(() => {
+      let credentials = await resolveBoundCredentials(current => resolveCredentials(current.endpoint).catch(() => {
         throw conflict("Reconnect the provider credentials before resuming", {
           code: "chat_endpoint_credentials_missing",
         });
-      });
-      const identity = await verifyCredentials(endpoint.provider, credentials);
+      }));
+      const identity = await providerUse(() => verifyCredentials(endpoint.provider, credentials));
       const upgradingLegacyGitHubIdentity =
         endpoint.provider === "github" &&
         !endpoint.botExternalId &&
@@ -259,7 +296,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
         );
       }
       await assertNativeBotIdentityAvailable(endpoint, identity);
-      const prepared = await prepareProviderInventory(endpoint, credentials);
+      const prepared = await providerUse(() => prepareProviderInventory(endpoint, credentials));
       if (
         endpoint.provider === "github" &&
         prepared.credentials.installationId !== credentials.installationId
@@ -631,10 +668,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
           },
         );
       });
-      const storedIdentity = await verifyCredentials(
-        "github",
-        storedCredentials,
-      );
+      const storedIdentity = await providerUse(() => verifyCredentials("github", storedCredentials));
       if (
         !legacyGitHubLabelsMatchVerifiedCredentials(endpoint, storedIdentity)
       ) {
@@ -652,16 +686,16 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
       ? (await resolveCredentials(endpoint).catch(() => ({} as Record<string, string>))).signingSecret : undefined;
     let credentials =
       input.credentials && Object.keys(input.credentials).length > 0
-        ? await normalizedCredentials(endpoint, input.credentials)
-        : await resolveCredentials(endpoint).catch(() => {
+        ? await resolveBoundCredentials(current => normalizedCredentials(current.endpoint, input.credentials))
+        : await resolveBoundCredentials(current => resolveCredentials(current.endpoint).catch(() => {
             throw unprocessable(
               `${PROVIDER_LABELS[endpoint.provider]} credentials are required`,
             );
-          });
+          }));
     if (endpoint.provider === "imessage-photon") {
       credentials = preparePhotonConfiguration(endpoint, input, credentials);
     }
-    const identity = await verifyCredentials(endpoint.provider, credentials);
+    const identity = await providerUse(() => verifyCredentials(endpoint.provider, credentials));
     // Once setup has claimed a provider bot identity, every credential repair
     // must prove that same identity before secrets can be replaced. A process
     // interruption can leave the endpoint in `attention` after the claim but
@@ -682,7 +716,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
       }
     }
     await assertNativeBotIdentityAvailable(endpoint, identity);
-    const prepared = await prepareProviderInventory(endpoint, credentials);
+    const prepared = await providerUse(() => prepareProviderInventory(endpoint, credentials));
     const credentialsChangedByDiscovery =
       endpoint.provider === "github" &&
       prepared.credentials.installationId !== credentials.installationId;

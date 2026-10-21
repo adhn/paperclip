@@ -1,12 +1,14 @@
+import { createHash } from "node:crypto";
+import { connectorRecoveryAuthoritySchema, type ConnectorRecoveryAuthority } from "../../../connector-recovery-authority.js";
 import { readFileSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { SLACK_MANAGER_SCOPES } from "@paperclipai/shared";
-import type { PaperclipCloudConnector, SealedConnectorCredentials } from "../../../paperclip-cloud-connector.js";
+import type { ConnectorRawResponseObserver, PaperclipCloudConnector, SealedConnectorCredentials } from "../../../paperclip-cloud-connector.js";
 import { createSlackSetupClient, object, providerFailure } from "./provider-client.js";
 
 export type SlackManagerClient = Pick<PaperclipCloudConnector,
   "getSlackManagerAppId" | "startAuthorization" | "claim" | "refresh" | "revoke"
-> & { authorizationMode?: "code" };
+> & { authorizationMode?: "code"; readonly recoveryAuthority?: ConnectorRecoveryAuthority };
 
 // Explicit local qualification only. Production continues using the sealed Cloud
 // broker; ordinary self-hosted installs neither load credentials nor contact it.
@@ -29,16 +31,32 @@ export function developmentSlackManager(
   if (typeof appId !== "string" || !/^A[A-Z0-9]+$/.test(appId)
     || typeof clientId !== "string" || !/^\d+\.\d+$/.test(clientId)
     || typeof clientSecret !== "string" || !clientSecret) throw providerFailure("slack_managed_unavailable");
+  let capturedCallback: string | undefined;
+  let capturedAuthority: ConnectorRecoveryAuthority | undefined;
   const callback = () => {
     const url = new URL(publicOrigin());
     if (url.protocol !== "https:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw providerFailure("slack_managed_unavailable");
-    return `${url.origin}/api/chat-slack/managed/oauth/callback`;
+    const current = `${url.origin}/api/chat-slack/managed/oauth/callback`;
+    if (capturedCallback !== undefined && capturedCallback !== current) throw providerFailure("slack_managed_unavailable");
+    capturedCallback = current;
+    return current;
+  };
+  const authority = (): ConnectorRecoveryAuthority => {
+    const callbackUri = callback(); // Preserve lazy invalid-origin refusal.
+    if (!capturedAuthority) capturedAuthority = Object.freeze(connectorRecoveryAuthoritySchema.parse({
+      schema: 1, kind: "development-direct-oauth", apiBaseUrl: "https://slack.com/api/", appId, clientId,
+      clientSecretSha256: createHash("sha256").update(clientSecret as string).digest("hex"), callbackUri,
+    }));
+    return capturedAuthority;
   };
   const api = createSlackSetupClient(fetchImpl);
-  async function credentials(fields: Record<string, string>, subject: string, companyId: string, initial: boolean): Promise<SealedConnectorCredentials> {
+  async function credentials(fields: Record<string, string>, subject: string, companyId: string, initial: boolean, observeRaw?: ConnectorRawResponseObserver): Promise<SealedConnectorCredentials> {
+    authority();
     let result: Record<string, unknown>;
-    try { result = await api("oauth.v2.access", { client_id: clientId as string, client_secret: clientSecret as string, ...fields }); }
-    catch { throw providerFailure("slack_manager_reauthorize"); }
+    let observerFailed = false;
+    try { result = await api("oauth.v2.access", { client_id: clientId as string, client_secret: clientSecret as string, ...fields }, undefined, undefined,
+      observeRaw ? async raw => { try { await observeRaw(raw); } catch (error) { observerFailed = true; throw error; } } : undefined); }
+    catch (error) { if (observerFailed) throw error; throw providerFailure("slack_manager_reauthorize"); }
     const user = initial ? object(result.authed_user) : result;
     const scopes = typeof user.scope === "string" ? user.scope.split(/[, ]+/) : [];
     const team = object(result.team);
@@ -56,18 +74,23 @@ export function developmentSlackManager(
   }
   return {
     authorizationMode: "code",
-    async getSlackManagerAppId() { callback(); return appId as string; },
+    get recoveryAuthority() { return authority(); },
+    async getSlackManagerAppId() { authority(); return appId as string; },
     async startAuthorization(values) {
+      authority();
       if (values.returnUri !== callback() || values.profile !== "slack.manager") throw providerFailure("slack_manager_reauthorize");
       const url = new URL("https://slack.com/oauth/v2/authorize");
       url.search = new URLSearchParams({ client_id: clientId as string, user_scope: SLACK_MANAGER_SCOPES.join(","), redirect_uri: callback(), state: values.returnState }).toString();
       return { authorizationUrl: url.toString(), expiresAt: new Date(Date.now() + 600_000).toISOString() };
     },
-    async claim(values) { return credentials({ code: values.claimId, redirect_uri: callback() }, values.subject, values.companyId, true); },
-    async refresh(values) { return credentials({ grant_type: "refresh_token", refresh_token: values.refreshToken }, values.subject, values.companyId, false); },
-    async revoke(values) {
-      try { await api("auth.revoke", {}, values.token); }
-      catch { throw providerFailure("slack_manager_reauthorize"); }
+    async claim(values, observeRaw) { return credentials({ code: values.claimId, redirect_uri: callback() }, values.subject, values.companyId, true, observeRaw); },
+    async refresh(values, observeRaw) { return credentials({ grant_type: "refresh_token", refresh_token: values.refreshToken }, values.subject, values.companyId, false, observeRaw); },
+    async revoke(values, observeRaw) {
+      authority();
+      let observerFailed = false;
+      try { await api("auth.revoke", {}, values.token, undefined,
+        observeRaw ? async raw => { try { await observeRaw(raw); } catch (error) { observerFailed = true; throw error; } } : undefined); }
+      catch (error) { if (observerFailed) throw error; throw providerFailure("slack_manager_reauthorize"); }
     },
   };
 }

@@ -1,0 +1,150 @@
+name: Paperclip candidate verification and publishing
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [paperclip-evaluation-handoff, paperclip-ssh-cancellation-fix, paperclip-ssh-lease-stop]
+    paths:
+      - clusters/homelab/infrastructure/paperclip-evaluation/images/**
+      # Recording verified registry digests must not republish the same candidate.
+      - '!clusters/homelab/infrastructure/paperclip-evaluation/images/published.json'
+      - clusters/homelab/infrastructure/paperclip-evaluation/scripts/**
+      - .github/workflows/paperclip-evaluation-images.yaml
+
+# Draft release assets require push access. This token remains in CI and is
+# never supplied to image containers, provider CLIs or the Kubernetes cluster.
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: paperclip-evaluation-images
+  cancel-in-progress: false
+
+jobs:
+  verify-publish:
+    if: github.ref_name != 'paperclip-ssh-cancellation-fix' && github.ref_name != 'paperclip-ssh-lease-stop'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PACKAGE: clusters/homelab/infrastructure/paperclip-evaluation
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Prepare verification tools
+        run: |
+          mkdir -p evidence
+          python3 -m venv "$RUNNER_TEMP/paperclip-verify-venv"
+          "$RUNNER_TEMP/paperclip-verify-venv/bin/pip" install PyYAML==6.0.3
+          echo "$RUNNER_TEMP/paperclip-verify-venv/bin" >> "$GITHUB_PATH"
+      - name: Retrieve unpublished candidate assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=$(python3 -c 'import json,os; print(json.load(open(os.environ["PACKAGE"]+"/images/candidates.json"))["releaseTag"])')
+          test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/candidates" --pattern '*.tar.gz'
+      - name: Verify provenance and load exact image candidates
+        run: python3 "$PACKAGE/scripts/load-candidates.py" "$RUNNER_TEMP/candidates" > evidence/candidate-identities.json
+      - name: Verify restricted image and transport behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=$(python3 -c 'import json,os; print(json.load(open(os.environ["PACKAGE"]+"/images/candidates.json"))["sourceRevision"])')
+          python3 "$PACKAGE/scripts/validate.py"
+          python3 "$PACKAGE/scripts/test-local.py"
+          for provider in codex claude gemini; do
+            bash "$PACKAGE/scripts/test-runner-image.sh" "paperclip-eval/runner-$provider:eval-$revision" "$provider" 2>&1 | tee "evidence/$provider-ssh.log"
+          done
+          bash "$PACKAGE/scripts/test-lan-proxy-image.sh" "paperclip-eval/lan-proxy:eval-$revision" 2>&1 | tee evidence/lan-proxy.log
+          docker run --rm --user 1000:1000 --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint sh "paperclip-eval/controller:eval-$revision" -c 'test -f /app/server/dist/index.js; for cli in codex claude gemini; do "$cli" --version; rc=$?; test "$rc" = 126 || exit 1; done' 2>&1 | tee evidence/controller-guards.log
+      - name: Authenticate to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Publish verified candidates and record registry digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=$(python3 -c 'import json,os; print(json.load(open(os.environ["PACKAGE"]+"/images/candidates.json"))["sourceRevision"])')
+          prefix=$(python3 -c 'import json,os; print(json.load(open(os.environ["PACKAGE"]+"/images/candidates.json"))["registryPrefix"])')
+          for name in controller runner-codex runner-claude runner-gemini lan-proxy; do
+            image="$prefix/$name:eval-$revision"
+            docker tag "paperclip-eval/$name:eval-$revision" "$image"
+            docker push "$image" 2>&1 | tee "evidence/$name-push.log"
+            docker buildx imagetools inspect "$image" > "evidence/$name-registry.txt"
+          done
+      - name: Retain sanitized verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: paperclip-evaluation-images-${{ github.run_id }}
+          path: evidence/
+          retention-days: 30
+      - name: Remove registry login
+        if: always()
+        run: docker logout ghcr.io
+
+  controller-cancellation-fix:
+    if: github.ref_name == 'paperclip-ssh-cancellation-fix' || github.ref_name == 'paperclip-ssh-lease-stop'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PACKAGE: clusters/homelab/infrastructure/paperclip-evaluation
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Verify supervisor ownership and cancellation races
+        run: python3 "$PACKAGE/scripts/test-ssh-cancellation.py"
+      - name: Reserve hosted-runner disk for the monorepo build
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This is a disposable GitHub-hosted VM. These preinstalled SDKs are
+          # unused by this pinned Docker build; preserve the runner/tool runtime.
+          sudo rm -rf -- /usr/local/lib/android /opt/ghc /usr/local/.ghcup /usr/share/dotnet /opt/hostedtoolcache/CodeQL
+          df -h /
+          docker system df
+      - name: Prepare exact pinned source and build controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "$PACKAGE/scripts/prepare-controller.py" "$RUNNER_TEMP/controller"
+          revision=$(python3 -c 'import json,os; print(json.load(open(os.environ["PACKAGE"]+"/images/inputs.json"))["sourceRevision"])')
+          docker buildx build --load --platform linux/amd64 --target production --build-arg "PAPERCLIP_BUILD_COMMIT=$revision" --label org.opencontainers.image.source=https://github.com/adhn/homelab --label io.paperclip.evaluation.patch=ssh-lease-stop-v1 -f "$RUNNER_TEMP/controller/Dockerfile.evaluation" -t paperclip-controller-fix "$RUNNER_TEMP/controller"
+      - name: Typecheck affected packages and run cancellation regression suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=$(python3 -c 'import json,os; print(json.load(open(os.environ["PACKAGE"]+"/images/inputs.json"))["sourceRevision"])')
+          docker buildx build --load --target build --build-arg "PAPERCLIP_BUILD_COMMIT=$revision" -f "$RUNNER_TEMP/controller/Dockerfile.evaluation" -t paperclip-controller-test "$RUNNER_TEMP/controller"
+          docker run --rm --mount "type=bind,src=$GITHUB_WORKSPACE/$PACKAGE/scripts/test-controller-source.sh,dst=/test-controller-source.sh,readonly" --entrypoint sh paperclip-controller-test /test-controller-source.sh
+      - name: Verify actual rootless SSH cancellation and sibling isolation
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          runner=$(python3 -c 'import json,os; print(json.load(open(os.environ["PACKAGE"]+"/images/published.json"))["images"]["runner-codex"])')
+          docker pull "$runner"
+          python3 "$PACKAGE/scripts/test-controller-ssh-cancellation.py" paperclip-controller-fix "$runner"
+          docker run --rm --user 1000:1000 --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint sh paperclip-controller-fix -c 'for cli in codex claude gemini; do "$cli" --version; rc=$?; test "$rc" = 126 || exit 1; done'
+      - name: Publish verified controller candidate
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          image="ghcr.io/adhn/paperclip-eval/controller:ssh-cancel-${GITHUB_SHA}"
+          docker tag paperclip-controller-fix "$image"
+          docker push "$image"
+          docker buildx imagetools inspect "$image"
+      - name: Remove registry login
+        if: always()
+        run: docker logout ghcr.io

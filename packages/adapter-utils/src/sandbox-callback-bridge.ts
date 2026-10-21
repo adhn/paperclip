@@ -1853,6 +1853,14 @@ export async function startSandboxCallbackBridgeServer(input: {
     maxBodyBytes: input.maxBodyBytes,
   });
   const nodeCommand = input.nodeCommand?.trim() || "node";
+  let ownedService: { stop(): Promise<void> } | undefined;
+  if (input.runner.startService) {
+    requireSuccessfulResult("prepare callback service directories", await runShell(input.runner, input.remoteCwd,
+      `mkdir -p ${shellQuote(directories.requestsDir)} ${shellQuote(directories.responsesDir)} ${shellQuote(directories.logsDir)} && rm -f ${shellQuote(directories.readyFile)}`,
+      timeoutMs, shellCommand));
+    ownedService = await input.runner.startService({ command: nodeCommand, args: [remoteEntrypoint],
+      cwd: input.remoteCwd, env: { [SANDBOX_EXEC_CHANNEL_ENV]: SANDBOX_EXEC_CHANNEL_BRIDGE, ...env } });
+  } else {
   const startResult = await runSandboxBridgeControlCommand(input.runner, {
     command: shellCommand,
     args: shellCommandArgs(
@@ -1874,6 +1882,8 @@ export async function startSandboxCallbackBridgeServer(input: {
     timeoutMs,
   });
   requireSuccessfulResult("start sandbox callback bridge", startResult);
+
+  }
 
   const readyResult = await runShell(
     input.runner,
@@ -1929,6 +1939,7 @@ export async function startSandboxCallbackBridgeServer(input: {
     pid: typeof readyData.pid === "number" && Number.isFinite(readyData.pid) ? readyData.pid : 0,
     directories,
     stop: async () => {
+      if (ownedService) { await ownedService.stop(); return; }
       const stopResult = await runSandboxBridgeControlCommand(input.runner, {
         command: shellCommand,
         args: shellCommandArgs(

@@ -71,3 +71,64 @@ describe("local managed Slack qualification", () => {
     await expect(client.revoke({ ...identity, token: "access-canary" })).rejects.toThrow();
   });
 });
+
+describe("development manager original raw response custody", () => {
+  for (const method of ["claim", "refresh", "revoke"] as const) {
+    it(`awaits raw ${method} result before validation and propagates observer failure without replay`, async () => {
+      const { env } = fixture();
+      const fetcher = vi.fn(async () => response({ ok: false, error: "provider-secret-canary" }));
+      const client = developmentSlackManager(origin, env, fetcher)!;
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => { release = resolve; });
+      const original = new Error("raw result persistence unknown");
+      const observer = vi.fn(async (_raw: { status: number; headers: Record<string, string>; bodyBase64: string }) => { await pending; throw original; });
+      const operation = method === "claim" ? client.claim({ ...identity, claimId: "code", redemptionId: "stable" }, observer)
+        : method === "refresh" ? client.refresh({ ...identity, refreshToken: "original" }, observer)
+        : client.revoke({ ...identity, token: "original" }, observer);
+      let settled = false;
+      const outcome = operation.then(() => { settled = true; return null; }, (error) => { settled = true; return error; });
+      try {
+        await vi.waitFor(() => expect(observer).toHaveBeenCalledOnce());
+        expect(settled).toBe(false);
+        expect(JSON.parse(Buffer.from(observer.mock.calls[0][0].bodyBase64, "base64").toString())).toEqual({ ok: false, error: "provider-secret-canary" });
+      } finally { release(); }
+      expect(await outcome).toBe(original);
+      expect(fetcher).toHaveBeenCalledOnce();
+    });
+  }
+});
+
+describe("local direct OAuth recovery authority snapshot", () => {
+  it("captures loaded app/client/secret and exact callback without exposing the secret", async () => {
+    const { env, path } = fixture();
+    const fetcher = vi.fn(async (_url: unknown, _init?: RequestInit) => response({ ok: true, app_id: "A123", team: { id: "T123", name: "Paperclip" }, authed_user: user }));
+    const client = developmentSlackManager(origin, env, fetcher)!;
+    const descriptor = client.recoveryAuthority;
+    expect(descriptor).toMatchObject({ schema: 1, kind: "development-direct-oauth", apiBaseUrl: "https://slack.com/api/", appId: "A123", clientId: "123.456", callbackUri: `${origin()}/api/chat-slack/managed/oauth/callback` });
+    expect(Object.isFrozen(descriptor)).toBe(true);
+    expect(JSON.stringify(descriptor)).not.toContain("client-secret-canary");
+    writeFileSync(path, JSON.stringify({ appId: "A123", clientId: "123.456", clientSecret: "changed-client-secret" }), { mode: 0o600 });
+    const changed = developmentSlackManager(origin, env)!;
+    expect(changed.recoveryAuthority).not.toEqual(descriptor);
+    await client.claim({ ...identity, claimId: "code", redemptionId: "stable" });
+    expect((fetcher.mock.calls[0][1]!.body as URLSearchParams).get("client_secret")).toBe("client-secret-canary");
+    expect(client.recoveryAuthority).toBe(descriptor);
+    for (const values of [{ appId: "AOTHER", clientId: "123.456" }, { appId: "A123", clientId: "987.654" }]) {
+      writeFileSync(path, JSON.stringify({ ...values, clientSecret: "client-secret-canary" }), { mode: 0o600 });
+      expect(developmentSlackManager(origin, env)!.recoveryAuthority).not.toEqual(descriptor);
+    }
+    expect(developmentSlackManager(() => "https://other.fixture.invalid", env)!.recoveryAuthority).not.toEqual(descriptor);
+  });
+  it("refuses origin drift on actual claim/refresh/revoke methods before dispatch", async () => {
+    const { env } = fixture(); let selectedOrigin = origin();
+    const fetcher = vi.fn();
+    const client = developmentSlackManager(() => selectedOrigin, env, fetcher)!;
+    expect(client.recoveryAuthority).toMatchObject({ callbackUri: `${origin()}/api/chat-slack/managed/oauth/callback` });
+    selectedOrigin = "https://changed.fixture.invalid";
+    expect(() => client.recoveryAuthority).toThrow();
+    await expect(client.claim({ ...identity, claimId: "code", redemptionId: "stable" })).rejects.toThrow();
+    await expect(client.refresh({ ...identity, refreshToken: "original" })).rejects.toThrow();
+    await expect(client.revoke({ ...identity, token: "original" })).rejects.toThrow();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+});

@@ -848,6 +848,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // generic `restore` seam per asset before destroying the sandbox.
                 // Target is the shared symlink SOURCE (what managed homes point
                 // `auth.json` at), not the in-sandbox symlink.
+                recovery: { operation: "codex_auth", hostAuthPath: path.join(config.managedAiConnection ? effectiveCodexHome : resolveSharedCodexHomeDir(process.env), "auth.json") },
                 restore: async ({ assetDir, readFile }) =>
                   void (await copyBackCodexAuth({
                     readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),

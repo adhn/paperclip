@@ -1,3 +1,4 @@
+import { resolveDefaultSecretsKeyFilePath } from "../home-paths.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
@@ -18,7 +19,9 @@ import { and, eq, sql } from "drizzle-orm";
 import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
-import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
+import { withQuotaCredentialSettlement, quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash, isQuotaExchangeIntent, isQuotaExchangeResult, type QuotaExchangeIntent } from "../services/quota-credential-recovery.js";
+import { readQuotaOwnerIdentity } from "../services/quota-owner-identity.js";
+import { readSecretRecoveryIdentity } from "../services/secret-recovery-identity.js";
 import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { syncConnectionCredentialBindings } from "../services/connection-credential-bindings.js";
@@ -30,7 +33,7 @@ import { execute as executeGemini, testEnvironment as testGeminiEnvironment } fr
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
 import { resolveExecutionRunAdapterConfig } from "../services/heartbeat.js";
-import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
+import { aiConnectionMetadataSchema, aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
 import express from "express";
 import request from "supertest";
 import { aiConnectionRoutes, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "../routes/ai-connections.js";
@@ -83,12 +86,225 @@ describe("managed AI connections", () => {
     await expectSelectionFailure(service.select({ ...input, userId: owner }), "ai_connection_unavailable");
   });
 
+  async function quotaIntentFixture(label: string) {
+    const owner = `quota-intent-${label}-${randomUUID()}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const original = JSON.stringify({ tokens: { account_id: owner, access_token: "fixture-expired", refresh_token: "fixture-single-use" } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const ref = row.grant.credentialSecretRefs.find(item => item.configPath === "ai.credential")!;
+    const journal = quotaCredentialRecovery(companyId, row.grant.id);
+    const intent: QuotaExchangeIntent = { schema: 1, kind: "exchange-intent", operationId: randomUUID(),
+      companyId, grantId: row.grant.id, connectionId: row.connection.id, secretId: ref.secretId, baseHash: quotaCredentialHash(original), originalSecretIdentity: await readSecretRecoveryIdentity(db, companyId, ref.secretId), originalOwnerIdentity: await readQuotaOwnerIdentity(db, companyId, row.grant.id) };
+    return { owner, row, ref, journal, intent, original };
+  }
+
+  it("retains prospective quota intent across transport failure and service recreation without reexchange", async () => {
+    const f = await quotaIntentFixture("transport");
+    const request = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("fixture transport outcome unknown"));
+    try {
+      await expect(service.refreshQuotaCredential(f.row, f.original, new AbortController().signal, { kind: "user", userId: f.owner })).rejects.toThrow("transport outcome unknown");
+      expect(request).toHaveBeenCalledOnce();
+      const retained = await f.journal.read();
+      expect(retained && isQuotaExchangeIntent(retained)).toBe(true);
+      const restarted = aiConnectionService(db);
+      await expect(restarted.refreshQuotaCredential(f.row, f.original, new AbortController().signal, { kind: "user", userId: f.owner })).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      await expect(restarted.runtimeCredential(f.row, { kind: "user", userId: f.owner })).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      expect(request).toHaveBeenCalledOnce();
+      expect(await f.journal.read()).toEqual(retained);
+      expect(await restarted.credential(f.row)).toBe(f.original);
+      expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, f.ref.secretId))).toHaveLength(1);
+    } finally { request.mockRestore(); }
+  });
+
+  it.each(["api_key", "provider"] as const)("keeps prospective quota intent occupied after same-grant %s metadata change", async (change) => {
+    const f = await quotaIntentFixture(change);
+    await f.journal.beginExchange(f.intent);
+    // Exercise actual persisted same-grant metadata; this is not a claim that
+    // user-facing reconnect permits every such transition.
+    const changed = { ...f.row.connection.config, ai: { ...(f.row.connection.config.ai as Record<string, unknown>),
+      method: "api_key", provider: change === "provider" ? "anthropic" : "openai" } };
+    expect(aiConnectionMetadataSchema.safeParse(changed.ai).success).toBe(true);
+    await db.update(toolConnections).set({ config: changed }).where(eq(toolConnections.id, f.row.connection.id));
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, f.row.connection.id));
+    const request = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("must not exchange"));
+    try {
+      await expect(aiConnectionService(db).runtimeCredential({ connection, grant: f.row.grant }, { kind: "user", userId: f.owner })).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      expect(await f.journal.read()).toEqual(f.intent);
+      expect(request).not.toHaveBeenCalled();
+      await expect(f.journal.clear(f.intent)).rejects.toThrow("exchange_pending");
+    } finally { request.mockRestore(); }
+  });
+
+  it.each(["runtime", "refresh"] as const)("retains exact typed quota result already SQL-current through %s without inferring commit authority", async (consumer) => {
+    const f = await quotaIntentFixture(`committed-${consumer}`);
+    const value = JSON.stringify({ tokens: { account_id: "fixture", access_token: "fixture-new", refresh_token: "fixture-next" } });
+    const result = { ...f.intent, kind: "exchange-result" as const, intent: f.intent, value };
+    await f.journal.beginExchange(f.intent);
+    await f.journal.completeExchange(result);
+    // Exercise the genuine narrow settlement write, then deliberately retain
+    // its journal. This fixture supplies no independent lost-COMMIT receipt;
+    // a later consumer must hold even though SQL currently contains the value.
+    await codexAdapter.withAccountHomeSecretMutationLock(undefined, companyId, () =>
+      withQuotaCredentialSettlement(result, f.intent.originalSecretIdentity, f.original,
+        () => secretService(db).rotate(f.ref.secretId, { value, preserveAiSessionEpoch: true })),
+    );
+    const request = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("must not exchange"));
+    try {
+      const restarted = aiConnectionService(db);
+      const selected = consumer === "runtime" ? restarted.runtimeCredential(f.row, { kind: "user", userId: f.owner })
+        : restarted.refreshQuotaCredential(f.row, f.original, new AbortController().signal, { kind: "user", userId: f.owner });
+      await expect(selected).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      expect(await f.journal.read()).toEqual(result);
+      expect(await restarted.credential(f.row)).toBe(value);
+      expect(request).not.toHaveBeenCalled();
+      expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, f.ref.secretId))).toHaveLength(2);
+    } finally { request.mockRestore(); }
+  });
+
+  it.each(["provider", "method", "subject", "routing"] as const)("holds typed quota result after same-grant original owner %s changes", async (change) => {
+    const f = await quotaIntentFixture(`owner-${change}`);
+    const result = { ...f.intent, kind: "exchange-result" as const, intent: f.intent, value: "fixture-unsettled-owner-result" };
+    await f.journal.beginExchange(f.intent);
+    await f.journal.completeExchange(result);
+    if (change === "subject") {
+      await db.update(connectionGrants).set({ subjectUserId: "bob" }).where(eq(connectionGrants.id, f.row.grant.id));
+    } else {
+      const ai = { ...(f.row.connection.config.ai as Record<string, unknown>),
+        ...(change === "provider" ? { provider: "anthropic" } : change === "method" ? { method: "api_key" } : {
+          routing: { kind: "gateway", protocol: "responses", auth: "bearer", baseUrl: "https://fixture.invalid/v1", models: [] },
+        }) };
+      expect(aiConnectionMetadataSchema.safeParse(ai).success).toBe(true);
+      await db.update(toolConnections).set({ config: { ...f.row.connection.config, ai } }).where(eq(toolConnections.id, f.row.connection.id));
+    }
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, f.row.connection.id));
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.row.grant.id));
+    const versions = await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, f.ref.secretId));
+    expect(await readQuotaOwnerIdentity(db, companyId, f.row.grant.id)).not.toEqual(f.intent.originalOwnerIdentity);
+    const request = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("owner hold must not dispatch"));
+    try {
+      const restarted = aiConnectionService(db);
+      const current = { connection, grant };
+      await expect(restarted.runtimeCredential(current, { kind: "user", userId: f.owner })).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      await expect(restarted.refreshQuotaCredential(current, f.original, new AbortController().signal, { kind: "user", userId: f.owner })).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      // A stale caller snapshot must not bypass current joined owner inspection.
+      await expect(restarted.runtimeCredential(f.row, { kind: "user", userId: f.owner })).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      expect(request).not.toHaveBeenCalled();
+      expect(await f.journal.read()).toEqual(result);
+      expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, f.ref.secretId))).toEqual(versions);
+      expect(await localEncryptedProvider.resolveVersion({ material: versions[0].material, externalRef: null })).toBe(f.original);
+    } finally { request.mockRestore(); }
+  });
+
+  it("refuses typed quota recovery after same-value credential version replacement", async () => {
+    const f = await quotaIntentFixture("same-value-new-version");
+    const result = { ...f.intent, kind: "exchange-result" as const, intent: f.intent, value: "fixture-held-provider-result" };
+    await f.journal.beginExchange(f.intent);
+    await f.journal.completeExchange(result);
+    const originalVersions = await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, f.ref.secretId));
+    await expect(secretService(db).rotate(f.ref.secretId, { value: f.original, preserveAiSessionEpoch: true }))
+      .rejects.toMatchObject({ status: 409, details: { code: "secret_credential_recovery_pending" } });
+    expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, f.ref.secretId))).toEqual(originalVersions);
+    // Test-only uncontrolled SQL writer: copy the actual original encrypted
+    // material into a distinct version, without claiming the guarded service
+    // admitted this mutation or backfilling any journal/commit receipt.
+    await db.transaction(async tx => {
+      const [parent] = await tx.select().from(companySecrets).where(eq(companySecrets.id, f.ref.secretId)).for("update");
+      const originalVersion = originalVersions.find(version => version.version === parent.latestVersion)!;
+      await tx.insert(companySecretVersions).values({ ...originalVersion, id: randomUUID(), version: parent.latestVersion + 1 });
+      await tx.update(companySecrets).set({ latestVersion: parent.latestVersion + 1 }).where(eq(companySecrets.id, parent.id));
+    });
+    expect(await service.credential(f.row)).toBe(f.original);
+    const currentIdentity = await readSecretRecoveryIdentity(db, companyId, f.ref.secretId);
+    expect(currentIdentity.versionId).not.toBe(f.intent.originalSecretIdentity.versionId);
+    const request = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("must not exchange"));
+    try {
+      const restarted = aiConnectionService(db);
+      await expect(restarted.runtimeCredential(f.row, { kind: "user", userId: f.owner })).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      await expect(restarted.refreshQuotaCredential(f.row, f.original, new AbortController().signal, { kind: "user", userId: f.owner })).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      expect(await f.journal.read()).toEqual(result);
+      expect(await readSecretRecoveryIdentity(db, companyId, f.ref.secretId)).toEqual(currentIdentity);
+      expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, f.ref.secretId))).toHaveLength(2);
+      expect(request).not.toHaveBeenCalled();
+    } finally { request.mockRestore(); }
+  });
+
+  it.each(["secret", "base"] as const)("retains mismatched typed quota %s result without exchange or credential replacement", async (mismatch) => {
+    const f = await quotaIntentFixture(`mismatch-${mismatch}`);
+    const mismatchedSecret = randomUUID();
+    const intent = { ...f.intent, ...(mismatch === "secret" ? { secretId: mismatchedSecret, originalSecretIdentity: { ...f.intent.originalSecretIdentity, secretId: mismatchedSecret } } : { baseHash: quotaCredentialHash("different-original") }) };
+    const result = { ...intent, kind: "exchange-result" as const, intent, value: "fixture-unselected-result" };
+    await f.journal.beginExchange(intent);
+    await f.journal.completeExchange(result);
+    const request = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("must not exchange"));
+    try {
+      const restarted = aiConnectionService(db);
+      await expect(restarted.runtimeCredential(f.row, { kind: "user", userId: f.owner })).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      await expect(restarted.refreshQuotaCredential(f.row, f.original, new AbortController().signal, { kind: "user", userId: f.owner })).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      expect(await f.journal.read()).toEqual(result);
+      expect(await restarted.credential(f.row)).toBe(f.original);
+      expect(request).not.toHaveBeenCalled();
+      expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, f.ref.secretId))).toHaveLength(1);
+    } finally { request.mockRestore(); }
+  });
+
+  it.each(["intent", "result"] as const)("refuses reconnect while a typed quota %s retains original grant and credential identity", async (phase) => {
+    const f = await quotaIntentFixture(`reconnect-${phase}`);
+    await f.journal.beginExchange(f.intent);
+    if (phase === "result") await f.journal.completeExchange({ ...f.intent, kind: "exchange-result", intent: f.intent, value: "fixture-unsettled-result" });
+    const retained = await f.journal.read();
+    const [grantBefore] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.row.grant.id));
+    const [secretBefore] = await db.select().from(companySecrets).where(eq(companySecrets.id, f.ref.secretId));
+    const versions = await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, f.ref.secretId));
+    await expect(aiConnectionService(db).save(companyId, f.owner, {
+      provider: "openai", method: "subscription", ownership: "personal", connectionId: f.row.connection.id,
+      name: "Must not replace original", loginSessionId: "fixture", agentIds: [], allAgents: true,
+    }, JSON.stringify({ tokens: { access_token: "fixture-reconnected", refresh_token: "fixture-reconnected-next", account_id: f.owner } })))
+      .rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+    expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.row.grant.id)))[0]).toEqual(grantBefore);
+    expect((await db.select().from(companySecrets).where(eq(companySecrets.id, f.ref.secretId)))[0]).toEqual(secretBefore);
+    expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, f.ref.secretId))).toEqual(versions);
+    expect((await db.select().from(toolConnections).where(eq(toolConnections.id, f.row.connection.id)))[0]).toEqual(f.row.connection);
+    expect(await service.credential(f.row)).toBe(f.original);
+    expect(await f.journal.read()).toEqual(retained);
+  });
+
+  it("settles retained quota result after dashboard abort and first SQL rollback with one exchange", async () => {
+    const f = await quotaIntentFixture("abort-settlement");
+    const dashboard = new AbortController();
+    const transaction = db.transaction.bind(db);
+    const interrupted = vi.spyOn(db, "transaction").mockImplementationOnce(async (work, config) =>
+      transaction(async (tx) => {
+        await work(tx);
+        dashboard.abort();
+        throw new Error("fixture SQL rollback after accepted exchange");
+      }, config));
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ access_token: "fixture-saved-after-abort", refresh_token: "fixture-next-after-abort" }));
+    try {
+      const selected = await service.refreshQuotaCredential(f.row, f.original, dashboard.signal, { kind: "user", userId: f.owner });
+      expect(dashboard.signal.aborted).toBe(true);
+      expect(JSON.parse(selected).tokens.access_token).toBe("fixture-saved-after-abort");
+      expect(await service.credential(f.row)).toBe(selected);
+      expect(request).toHaveBeenCalledOnce();
+      expect(await f.journal.read()).toBeNull();
+      expect(await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, f.ref.secretId))).toHaveLength(2);
+    } finally { interrupted.mockRestore(); request.mockRestore(); }
+  });
+
   it("persists first-time recovery directories before consuming a single-use token", async () => {
     const owner = "quota-durable-path";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const original = JSON.stringify({ tokens: { account_id: owner, access_token: "expired", refresh_token: "single-use" } });
     await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
     const [row] = await service.quotaAccounts(companyId, owner);
+    // Connect now prospectively prepares recovery storage. Exercise a genuinely
+    // fresh disposable instance root while retaining the exact fixture key file,
+    // so an earlier test's directory publication cannot satisfy this barrier.
+    const previousHome = process.env.PAPERCLIP_HOME, previousKeyFile = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+    const keyFile = previousKeyFile?.trim() || resolveDefaultSecretsKeyFilePath();
+    const firstUseHome = await mkdtemp(path.join(os.tmpdir(), "quota-first-directory-"));
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = keyFile; process.env.PAPERCLIP_HOME = firstUseHome;
+    try {
     const file = quotaCredentialRecoveryPath(companyId, row.grant.id);
     const recoveryRoot = path.dirname(path.dirname(file));
     await expect(access(recoveryRoot)).rejects.toMatchObject({ code: "ENOENT" });
@@ -110,14 +326,19 @@ describe("managed AI connections", () => {
       return Response.json({ access_token: "fresh-durable", refresh_token: "replacement-durable" });
     });
     try {
-      await expect(service.refreshQuotaCredential(row, original, new AbortController().signal)).rejects.toThrow("Injected recovery directory flush failure");
+      await expect(service.refreshQuotaCredential(row, original, new AbortController().signal, { kind: "user", userId: owner })).rejects.toThrow("Injected recovery directory flush failure");
       expect(request).not.toHaveBeenCalled();
       expect(await service.credential(row)).toBe(original);
       rejectRoot = false;
-      await service.refreshQuotaCredential(row, original, new AbortController().signal);
+      await service.refreshQuotaCredential(row, original, new AbortController().signal, { kind: "user", userId: owner });
       expect(request).toHaveBeenCalledTimes(1);
       expect(JSON.parse(await service.credential(row))).toMatchObject({ tokens: { access_token: "fresh-durable", refresh_token: "replacement-durable" } });
     } finally { open.mockRestore(); request.mockRestore(); }
+    } finally {
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;
+      if (previousKeyFile === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE; else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = previousKeyFile;
+      await rm(firstUseHome, { recursive: true, force: true });
+    }
   });
 
   it.each(["timeout", "unexpected"] as const)("classifies a manual probe's %s lock failure before starting the provider", async (kind) => {
@@ -164,7 +385,7 @@ describe("managed AI connections", () => {
       await entered.promise;
       lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock");
       // Start outside the probe's async scope; it is a separate HTTP request.
-      refreshing = service.refreshQuotaCredential(row, auth("10"), new AbortController().signal);
+      refreshing = service.refreshQuotaCredential(row, auth("10"), new AbortController().signal, { kind: "user", userId: owner });
       await vi.waitFor(() => expect(lock).toHaveBeenCalled());
       expect(request).not.toHaveBeenCalled();
       release.resolve(); await probing;
@@ -271,7 +492,7 @@ describe("managed AI connections", () => {
     const file = quotaCredentialRecoveryPath(companyId, row.grant.id);
     let triggerDropped = false;
     try {
-      await expect(service.refreshQuotaCredential(row, original, new AbortController().signal)).rejects.toThrow();
+      await expect(service.refreshQuotaCredential(row, original, new AbortController().signal, { kind: "user", userId: owner })).rejects.toThrow();
       expect(request).toHaveBeenCalledTimes(1);
       expect(await service.credential(row)).toBe(original);
       const encrypted = await readFile(file, "utf8");
@@ -281,7 +502,7 @@ describe("managed AI connections", () => {
       triggerDropped = true;
       // A new service instance recovers from disk, without an in-memory cache.
       const recovered = aiConnectionService(db);
-      await recovered.refreshQuotaCredential(row, original, new AbortController().signal);
+      await recovered.refreshQuotaCredential(row, original, new AbortController().signal, { kind: "user", userId: owner });
       expect(JSON.parse(await recovered.credential(row))).toMatchObject({ tokens: { access_token: `fresh-${failure}`, refresh_token: `replacement-${failure}` } });
       expect(request).toHaveBeenCalledTimes(1);
       await expect(access(file)).rejects.toThrow();
@@ -370,7 +591,7 @@ describe("managed AI connections", () => {
     } finally { request.mockRestore(); await oldRun.cleanup(); await nextRun?.cleanup(); await journal.clear(); }
   });
 
-  it.each(["rollback", "lost_commit_reply"] as const)("automatically saves one exchanged token across %s", async (failure) => {
+  it.each(["rollback", "lost_commit_reply"] as const)("retains outcome uncertainty or retries exact rollback after %s", async (failure) => {
     const owner = `quota-once-${failure}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const original = JSON.stringify({ tokens: { access_token: "expired", refresh_token: "single-use", account_id: owner } });
@@ -386,10 +607,20 @@ describe("managed AI connections", () => {
     });
     const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ access_token: "fresh-once", refresh_token: "replacement-once" }));
     try {
-      await service.refreshQuotaCredential(row, original, new AbortController().signal);
+      const exchange = service.refreshQuotaCredential(row, original, new AbortController().signal, { kind: "user", userId: owner });
+      if (failure === "rollback") await exchange;
+      else await expect(exchange).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
       expect(JSON.parse(await service.credential(row))).toMatchObject({ tokens: { access_token: "fresh-once", refresh_token: "replacement-once" } });
       expect(request).toHaveBeenCalledTimes(1);
-      await expect(access(quotaCredentialRecoveryPath(companyId, row.grant.id))).rejects.toThrow();
+      const journal = quotaCredentialRecovery(companyId, row.grant.id);
+      if (failure === "rollback") expect(await journal.read()).toBeNull();
+      else {
+        const retained = await journal.read();
+        expect(retained && isQuotaExchangeResult(retained)).toBe(true);
+        await expect(aiConnectionService(db).refreshQuotaCredential(row, original, new AbortController().signal, { kind: "user", userId: owner })).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+        expect(await journal.read()).toEqual(retained);
+        expect(request).toHaveBeenCalledOnce();
+      }
     } finally { interrupted.mockRestore(); request.mockRestore(); }
   });
 
@@ -406,18 +637,20 @@ describe("managed AI connections", () => {
       .mockResolvedValueOnce(Response.json({ access_token: "C", refresh_token: "refresh-C" }));
     let triggerInstalled = false;
     try {
-      const current = await service.refreshQuotaCredential(row, original, new AbortController().signal);
+      const current = await service.refreshQuotaCredential(row, original, new AbortController().signal, { kind: "user", userId: owner });
       await db.execute(sql.raw(`create function delayed_quota_commit_failure() returns trigger language plpgsql as $$ begin
         if new.secret_id = '${ref.secretId}'::uuid then raise exception 'injected delayed quota commit failure'; end if; return new; end $$;
         create constraint trigger delayed_quota_commit_failure after insert on company_secret_versions deferrable initially deferred
         for each row execute function delayed_quota_commit_failure();`));
       triggerInstalled = true;
-      await expect(service.refreshQuotaCredential(row, current, new AbortController().signal)).rejects.toThrow();
+      await expect(service.refreshQuotaCredential(row, current, new AbortController().signal, { kind: "user", userId: owner })).rejects.toThrow();
       expect(await service.credential(row)).toBe(current);
-      expect(JSON.parse((await journal.read())!.value).tokens.access_token).toBe("C");
+      const pending = await journal.read();
+      expect(pending && isQuotaExchangeResult(pending)).toBe(true);
+      expect(pending && "value" in pending && JSON.parse(pending.value).tokens.access_token).toBe("C");
       await db.execute(sql`drop trigger delayed_quota_commit_failure on company_secret_versions; drop function delayed_quota_commit_failure()`);
       triggerInstalled = false;
-      const recovered = await service.refreshQuotaCredential(row, original, new AbortController().signal);
+      const recovered = await service.refreshQuotaCredential(row, original, new AbortController().signal, { kind: "user", userId: owner });
       expect(JSON.parse(recovered).tokens).toMatchObject({ access_token: "C", refresh_token: "refresh-C" });
       expect(await service.credential(row)).toBe(recovered);
       expect(await journal.read()).toBeNull();
@@ -428,7 +661,7 @@ describe("managed AI connections", () => {
     }
   });
 
-  it.each(["reconnected", "expired_reconnect", "revoked"] as const)("does not apply a pending refresh over a %s identity", async (change) => {
+  it.each(["reconnected", "expired_reconnect", "revoked"] as const)("does not apply a historical pending refresh over a %s identity changed outside guarded services", async (change) => {
     const owner = `quota-replay-${change}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const original = JSON.stringify({ tokens: { access_token: "expired", refresh_token: "single-use", account_id: owner } });
@@ -438,28 +671,82 @@ describe("managed AI connections", () => {
     const journal = quotaCredentialRecovery(companyId, row.grant.id);
     await journal.write({ companyId, grantId: row.grant.id, connectionId: row.connection.id, secretId: ref.secretId, baseHash: quotaCredentialHash(original), value: "old-pending-replacement" });
     const request = vi.spyOn(globalThis, "fetch");
+    const uncontrolledReplacement = async (value: string) => {
+      const before = await readSecretRecoveryIdentity(db, companyId, ref.secretId);
+      await expect(secretService(db).rotate(ref.secretId, { value }))
+        .rejects.toMatchObject({ status: 409, details: { code: "secret_credential_recovery_pending" } });
+      expect(await readSecretRecoveryIdentity(db, companyId, ref.secretId)).toEqual(before);
+      // Deliberately uncooperative test-only SQL writer. This is not an admitted
+      // reconnect, settlement exemption, or originating COMMIT receipt.
+      const replacement = await localEncryptedProvider.createVersion({ value });
+      await db.transaction(async tx => {
+        const [parent] = await tx.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId)).for("update");
+        const [version] = await tx.select().from(companySecretVersions).where(and(eq(companySecretVersions.secretId, ref.secretId), eq(companySecretVersions.version, parent.latestVersion)));
+        await tx.insert(companySecretVersions).values({ ...version, id: randomUUID(), version: parent.latestVersion + 1, material: replacement.material });
+        await tx.update(companySecrets).set({ latestVersion: parent.latestVersion + 1 }).where(eq(companySecrets.id, ref.secretId));
+      });
+      expect((await readSecretRecoveryIdentity(db, companyId, ref.secretId)).versionId).not.toBe(before.versionId);
+    };
     try {
       if (change === "reconnected") {
-        await secretService(db).rotate(ref.secretId, { value: "new-authorized-identity" });
-        expect(await service.refreshQuotaCredential(row, original, new AbortController().signal)).toBe("new-authorized-identity");
-        expect(await service.credential(row)).toBe("new-authorized-identity");
+        await uncontrolledReplacement("new-out-of-band-identity");
+        expect(await service.refreshQuotaCredential(row, original, new AbortController().signal, { kind: "user", userId: owner })).toBe("new-out-of-band-identity");
+        expect(await service.credential(row)).toBe("new-out-of-band-identity");
         expect(await journal.read()).toBeNull();
       } else if (change === "expired_reconnect") {
         const reconnected = JSON.stringify({ tokens: { access_token: "expired-new-account", refresh_token: "new-account-refresh", account_id: owner } });
-        await secretService(db).rotate(ref.secretId, { value: reconnected });
+        await uncontrolledReplacement(reconnected);
         request.mockResolvedValueOnce(Response.json({ access_token: "new-account-fresh", refresh_token: "new-account-replacement" }));
-        await service.refreshQuotaCredential(row, reconnected, new AbortController().signal);
+        await service.refreshQuotaCredential(row, reconnected, new AbortController().signal, { kind: "user", userId: owner });
         expect(request).toHaveBeenCalledOnce();
         expect(JSON.parse(String(request.mock.calls[0][1]?.body))).toMatchObject({ refresh_token: "new-account-refresh" });
         expect(JSON.parse(await service.credential(row))).toMatchObject({ tokens: { access_token: "new-account-fresh", refresh_token: "new-account-replacement" } });
         expect(await journal.read()).toBeNull();
       } else {
         await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, row.grant.id));
-        await expect(service.refreshQuotaCredential(row, original, new AbortController().signal)).rejects.toThrow("credentials_unavailable");
+        await expect(service.refreshQuotaCredential(row, original, new AbortController().signal, { kind: "user", userId: owner })).rejects.toThrow("credentials_unavailable");
         expect(await journal.read()).not.toBeNull();
       }
       if (change !== "expired_reconnect") expect(request).not.toHaveBeenCalled();
     } finally { request.mockRestore(); await journal.clear(); }
+  });
+
+  it.each(["disabled", "archived", "health", "provider", "method", "routing", "nonopenai"] as const)(
+    "refuses stale supplied credential owner after current %s mutation", async change => {
+      const owner = `stale-authority-${change}`;
+      await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+      const original = JSON.stringify({ tokens: { access_token: "fixture-old", refresh_token: "fixture-single-use" } });
+      const saved = change === "nonopenai" ? await create(owner, owner) : await service.save(companyId, owner,
+        { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
+      const [row] = await db.select({ connection: toolConnections, grant: connectionGrants }).from(toolConnections)
+        .innerJoin(connectionGrants, eq(connectionGrants.connectionId, toolConnections.id))
+        .where(eq(toolConnections.id, saved.connectionId));
+      expect(row).toBeDefined();
+      const request = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("provider must not be reached"));
+      try {
+        const patch = change === "disabled" || change === "nonopenai" ? { enabled: false }
+          : change === "archived" ? { status: "archived" as const }
+          : change === "health" ? { healthStatus: "error" as const }
+          : { config: { ...row.connection.config, ai: { ...(row.connection.config.ai as Record<string, unknown>),
+            ...(change === "provider" ? { provider: "anthropic" } : change === "method" ? { method: "api_key" } :
+              { routing: { kind: "gateway", protocol: "responses", auth: "bearer", baseUrl: "https://fixture.invalid/v1", models: [] } }),
+          } } };
+        await db.update(toolConnections).set(patch).where(eq(toolConnections.id, saved.connectionId));
+        await expect(service.runtimeCredential(row, { kind: "user", userId: owner })).rejects.toThrow("credentials_unavailable");
+        await expect(service.refreshQuotaCredential(row, original, new AbortController().signal, { kind: "user", userId: owner })).rejects.toThrow("credentials_unavailable");
+        expect(request).not.toHaveBeenCalled();
+        expect(await quotaCredentialRecovery(companyId, row.grant.id).read()).toBeNull();
+      } finally { request.mockRestore(); }
+    },
+  );
+  it("releases unchanged active nonOpenAI credentials through the current-owner transaction", async () => {
+    const owner = "current-nonopenai-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const saved = await create(owner, owner);
+    const [row] = await db.select({ connection: toolConnections, grant: connectionGrants }).from(toolConnections)
+      .innerJoin(connectionGrants, eq(connectionGrants.connectionId, toolConnections.id))
+      .where(eq(toolConnections.id, saved.connectionId));
+    expect(await service.runtimeCredential(row, { kind: "user", userId: owner })).toBe(`fixture-${owner}`);
   });
 
   it("saves exchanged tokens when the quota deadline expires during response-body reading", async () => {
@@ -478,7 +765,7 @@ describe("managed AI connections", () => {
         return { access_token: "fresh-after-deadline", refresh_token: "replacement" };
       } } as Response;
     });
-    const saving = service.refreshQuotaCredential(row, original, quotaDeadline.signal);
+    const saving = service.refreshQuotaCredential(row, original, quotaDeadline.signal, { kind: "user", userId: owner });
     try {
       await reading.promise;
       quotaDeadline.abort();
@@ -486,7 +773,7 @@ describe("managed AI connections", () => {
       releaseBody.resolve();
       await saving;
       expect(JSON.parse(await service.credential(row))).toMatchObject({ tokens: { access_token: "fresh-after-deadline", refresh_token: "replacement" } });
-      await expect(service.refreshQuotaCredential(row, original, quotaDeadline.signal)).rejects.toThrow();
+      await expect(service.refreshQuotaCredential(row, original, quotaDeadline.signal, { kind: "user", userId: owner })).rejects.toThrow();
       expect(request).toHaveBeenCalledTimes(1);
     } finally { releaseBody.resolve(); await saving.catch(() => {}); request.mockRestore(); }
   });
@@ -505,7 +792,7 @@ describe("managed AI connections", () => {
       started.resolve(); await release.promise;
       return Response.json({ access_token: "quota-fresh", refresh_token: "quota-replacement" });
     });
-    const refreshing = service.refreshQuotaCredential(quotaRow, auth(quotaOwner, "old"), new AbortController().signal);
+    const refreshing = service.refreshQuotaCredential(quotaRow, auth(quotaOwner, "old"), new AbortController().signal, { kind: "user", userId: quotaOwner });
     let run: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
     let cleaning: Promise<void> | undefined;
     let lock: ReturnType<typeof vi.spyOn> | undefined;
@@ -546,7 +833,7 @@ describe("managed AI connections", () => {
       started.resolve(); await release.promise;
       return Response.json({ access_token: "quota-fresh", refresh_token: "quota-replacement" });
     });
-    const refreshing = service.refreshQuotaCredential(quotaRow, original, new AbortController().signal);
+    const refreshing = service.refreshQuotaCredential(quotaRow, original, new AbortController().signal, { kind: "user", userId: owner });
     let saving: ReturnType<typeof service.save> | undefined;
     let lock: ReturnType<typeof vi.spyOn> | undefined;
     const credential = JSON.stringify({ tokens: { account_id: "signed-in", access_token: "login-token", refresh_token: "login-refresh" } });
@@ -586,12 +873,12 @@ describe("managed AI connections", () => {
     const started = new Date();
     if (kind === "quota") {
       const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ access_token: "access-fresh", refresh_token: "refresh-fresh" }));
-      try { await service.refreshQuotaCredential(row, auth("old", 10), new AbortController().signal); }
+      try { await service.refreshQuotaCredential(row, auth("old", 10), new AbortController().signal, { kind: "user", userId: owner }); }
       finally { request.mockRestore(); }
     } else if (kind === "recovery") {
       const recovery = quotaCredentialRecovery(companyId, row.grant.id);
       await recovery.write({ companyId, grantId: row.grant.id, connectionId: row.connection.id, secretId: ref.secretId, baseHash: quotaCredentialHash(auth("old", 10)), value: auth("fresh", 11) });
-      expect(await service.runtimeCredential(row)).toBe(auth("fresh", 11));
+      expect(await service.runtimeCredential(row, { kind: "user", userId: owner })).toBe(auth("fresh", 11));
     } else {
       const runtime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local", binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: {} });
       await writeFile(path.join(String(runtime.config.env.CODEX_HOME), "auth.json"), auth("fresh", 11));
@@ -646,7 +933,7 @@ describe("managed AI connections", () => {
     });
     let runtime: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
     let lock: ReturnType<typeof vi.spyOn> | undefined;
-    const refreshing = service.refreshQuotaCredential(row, original, new AbortController().signal);
+    const refreshing = service.refreshQuotaCredential(row, original, new AbortController().signal, { kind: "user", userId: owner });
     try {
       await exchangeStarted.promise;
       const edit = secretService(db).update(secretId, { description: "Changed during refresh" });
@@ -681,23 +968,23 @@ describe("managed AI connections", () => {
       await db.transaction(async tx => {
         const secretId = row.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!.secretId;
         await tx.select().from(companySecrets).where(eq(companySecrets.id, secretId)).for("update");
-        await expect(service.refreshQuotaCredential(row, original, signal)).rejects.toThrow();
+        await expect(service.refreshQuotaCredential(row, original, signal, { kind: "user", userId: owner })).rejects.toThrow();
         expect(request).not.toHaveBeenCalled();
       });
       const activeId = randomUUID();
       await db.insert(heartbeatRuns).values({ id: activeId, companyId, agentId, invocationSource: "on_demand", status: "running", contextSnapshot: { aiConnection: { grantId: account.grantId } } });
-      await expect(service.refreshQuotaCredential(row, original, signal)).rejects.toThrow("provider_unavailable");
+      await expect(service.refreshQuotaCredential(row, original, signal, { kind: "user", userId: owner })).rejects.toThrow("provider_unavailable");
       expect(request).not.toHaveBeenCalled();
       await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, activeId));
       const [first, second] = await Promise.all([
-        service.refreshQuotaCredential(row, original, signal),
-        service.refreshQuotaCredential(row, original, signal),
+        service.refreshQuotaCredential(row, original, signal, { kind: "user", userId: owner }),
+        service.refreshQuotaCredential(row, original, signal, { kind: "user", userId: owner }),
       ]);
       expect(first).toBe(second);
       expect(request).toHaveBeenCalledTimes(1);
       expect(JSON.parse(await service.credential(row))).toMatchObject({ tokens: { access_token: "fresh-access", refresh_token: "rotated-once", account_id: null } });
       await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
-      await expect(service.refreshQuotaCredential(row, first, signal)).rejects.toThrow("credentials_unavailable");
+      await expect(service.refreshQuotaCredential(row, first, signal, { kind: "user", userId: owner })).rejects.toThrow("credentials_unavailable");
       expect(request).toHaveBeenCalledTimes(1);
     } finally { request.mockRestore(); }
   });
@@ -793,7 +1080,9 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(await readFile(settingsFile, "utf8")).not.toContain("saved-google-key");
       expect((await stat(settingsFile)).mode & 0o777).toBe(0o600);
       const probe = await testGeminiEnvironment({ companyId, adapterType: "gemini_local", config: runtime.config });
-      expect(probe.status).toBe("pass");
+      // This subprocess is the literal fake above; retain check diagnostics so
+      // fixture protocol/environment failures cannot masquerade as auth proof.
+      expect(probe.status, JSON.stringify(probe.checks)).toBe("pass");
       expect(probe.checks).toContainEqual(expect.objectContaining({ code: "gemini_hello_probe_passed" }));
       const result = await executeGemini({
         runId: randomUUID(),

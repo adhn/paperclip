@@ -2367,6 +2367,55 @@
       "when": 1791903526575,
       "tag": "0339_luxuriant_iron_monger",
       "breakpoints": true
+    },
+    {
+      "idx": 340,
+      "version": "7",
+      "when": 1792346104529,
+      "tag": "0340_execution_admission",
+      "breakpoints": true
+    },
+    {
+      "idx": 341,
+      "version": "7",
+      "when": 1792417523781,
+      "tag": "0341_execution_operations",
+      "breakpoints": true
+    },
+    {
+      "idx": 342,
+      "version": "7",
+      "when": 1792418387581,
+      "tag": "0342_execution_operations",
+      "breakpoints": true
+    },
+    {
+      "idx": 343,
+      "version": "7",
+      "when": 1792419899592,
+      "tag": "0343_execution_operations",
+      "breakpoints": true
+    },
+    {
+      "idx": 344,
+      "version": "7",
+      "when": 1792432364807,
+      "tag": "0344_volatile_colossus",
+      "breakpoints": true
+    },
+    {
+      "idx": 345,
+      "version": "7",
+      "when": 1792438748566,
+      "tag": "0345_legacy_present_day_decisions",
+      "breakpoints": true
+    },
+    {
+      "idx": 346,
+      "version": "7",
+      "when": 1792439128065,
+      "tag": "0346_protected_authority",
+      "breakpoints": true
     }
   ]
 }

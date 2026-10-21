@@ -57,7 +57,16 @@ export async function fetchCompanyQuotaWindows(db: Db, companyId: string, userId
       const result = trackIdleWork((async (): Promise<ProviderQuotaResult> => {
         let credentialResolved = false;
         try {
-          const value = await service.credential(row);
+          const value = await service.runtimeCredential(row, { kind: "user", userId });
+          controller.signal.throwIfAborted();
+          // Recovery may commit a new credential revision during acquisition.
+          // Defer this observation rather than label new credential use with
+          // the predecessor's account/cache identity.
+          const selected = (await service.quotaAccounts(companyId, userId)).find(candidate =>
+            candidate.connection.id === row.connection.id && candidate.grant.id === row.grant.id);
+          if (!selected || selected.summary.status !== "connected") throw new Error("credentials_unavailable");
+          const selectedIdentity = identity(selected, await readRevisions(selected.grant.credentialSecretRefs.map(ref => ref.secretId)));
+          if (selectedIdentity.accountKey !== accountKey) throw new Error("provider_unavailable");
           controller.signal.throwIfAborted();
           credentialResolved = true;
           let windows;
@@ -73,7 +82,7 @@ export async function fetchCompanyQuotaWindows(db: Db, companyId: string, userId
             try { windows = await read(auth); }
             catch (error) {
               if (!(error instanceof Error) || !/\b401\b/.test(error.message)) throw error;
-              auth = JSON.parse(await service.refreshQuotaCredential(row, value, controller.signal));
+              auth = JSON.parse(await service.refreshQuotaCredential(row, value, controller.signal, { kind: "user", userId }));
               // Rotation changes both the grant and secret revision. Return and
               // cache the observation under the identity the next poll will see.
               const refreshed = (await service.quotaAccounts(companyId, userId)).find(candidate =>
@@ -83,7 +92,7 @@ export async function fetchCompanyQuotaWindows(db: Db, companyId: string, userId
               // A reconnect can race the completed refresh. Bind the value and
               // cache identity to one revision, rather than label old quota with
               // a newer account's key. A concurrent change defers this poll.
-              const refreshedValue = await service.credential(refreshed);
+              const refreshedValue = await service.runtimeCredential(refreshed, { kind: "user", userId });
               const verified = (await service.quotaAccounts(companyId, userId)).find(candidate =>
                 candidate.connection.id === row.connection.id && candidate.grant.id === row.grant.id);
               if (!verified || verified.summary.status !== "connected") throw new Error("credentials_unavailable");

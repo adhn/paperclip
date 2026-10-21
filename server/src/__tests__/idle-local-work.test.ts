@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { inspectIdleSpool, inspectIdleQuotaRecovery, idleQuotaRecoveryPath, readIdleLocalWork, markIdleIngressTracked, markIdleStartupComplete, registerIdleSpoolDirectory } from "../services/idle-local-work.js";
+import { inspectIdleSpool, inspectIdleQuotaRecovery, idleQuotaRecoveryPath, idleSlackInstallRecoveryPath, readIdleLocalWork, markIdleIngressTracked, markIdleStartupComplete, registerIdleSpoolDirectory } from "../services/idle-local-work.js";
 
 let root: string;
 beforeEach(async () => { root = await fs.mkdtemp(path.join(os.tmpdir(), "idle-spool-")); });
@@ -101,4 +101,60 @@ describe("idle credential recovery inspection", () => {
     await fs.rm(file);
     expect(await readIdleLocalWork()).toBe("none");
   });
+});
+
+
+describe("idle scan disappearance uncertainty", () => {
+  const missing = () => Object.assign(new Error("scan disappeared"), { code: "ENOENT" });
+  for (const scan of [inspectIdleSpool, inspectIdleQuotaRecovery]) {
+    it.each(["open", "read", "close"])(`${scan.name} retains ENOENT after successful lstat: %s`, async stage => {
+      const open = fs.opendir.bind(fs);
+      vi.spyOn(fs, "opendir").mockImplementation(async (...args: Parameters<typeof fs.opendir>) => {
+        if (stage === "open") throw missing();
+        const handle = await open(...args);
+        return {
+          read: async () => { if (stage === "read") throw missing(); return null; },
+          close: async () => { await handle.close(); if (stage === "close") throw missing(); },
+        } as Awaited<ReturnType<typeof fs.opendir>>;
+      });
+      expect(await scan(root)).toBe("unknown");
+    });
+  }
+  it("does not treat an enumerated company disappearing as an absent root", async () => {
+    const companyPath = path.join(root, "7238bc31-f3ca-42ba-b487-4122e77b8867");
+    await fs.mkdir(companyPath);
+    const stat = fs.lstat.bind(fs);
+    vi.spyOn(fs, "lstat").mockImplementation(async (...args: Parameters<typeof fs.lstat>) => {
+      if (args[0] === companyPath) throw missing();
+      return stat(...args);
+    });
+    expect(await inspectIdleQuotaRecovery(root)).toBe("unknown");
+  });
+  it.each(["pending.json", "partial.tmp", "pending-directory"])("retains Slack recovery authority: %s", async name => {
+    vi.stubEnv("PAPERCLIP_HOME", root);
+    markIdleIngressTracked(); markIdleStartupComplete({ scheduledBackups: false });
+    const companyPath = path.join(idleSlackInstallRecoveryPath(), "7238bc31-f3ca-42ba-b487-4122e77b8867");
+    await fs.mkdir(companyPath, { recursive: true });
+    const retained = path.join(companyPath, name);
+    if (name === "pending-directory") await fs.mkdir(retained);
+    else await fs.writeFile(retained, "opaque retained recovery");
+    expect(await readIdleLocalWork()).toBe("present");
+    await fs.rm(retained, { recursive: true });
+    expect(await readIdleLocalWork()).toBe("none");
+  });
+});
+
+
+it.each([inspectIdleSpool, inspectIdleQuotaRecovery])("%s refuses a removed directory even when its retained handle reads empty", async scan => {
+  const directory = path.join(root, "disappearing");
+  await fs.mkdir(directory);
+  const open = fs.opendir.bind(fs);
+  vi.spyOn(fs, "opendir").mockImplementation(async (...args: Parameters<typeof fs.opendir>) => {
+    const handle = await open(...args);
+    return {
+      read: async () => { await fs.rmdir(directory); return null; },
+      close: async () => { await handle.close(); },
+    } as Awaited<ReturnType<typeof fs.opendir>>;
+  });
+  expect(await scan(directory)).toBe("unknown");
 });

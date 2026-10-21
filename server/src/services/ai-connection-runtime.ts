@@ -1,3 +1,4 @@
+import type { AiCredentialUseContext } from "./ai-credential-use-context.js";
 import { createHash } from "node:crypto";
 import { HttpError, unprocessable } from "../errors.js";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
@@ -246,6 +247,11 @@ export async function prepareManagedAiRuntime(
   const harness = aiRoutingHarness(input.adapterType, input.config.provider, input.config.acpxAgent);
   await assertManagedAiProjectAuth(input.config, harness === "claude_local" ? "anthropic" : harness === "codex_local" ? "openai" : input.binding.provider);
   const service = aiConnectionService(db);
+  const useContext: AiCredentialUseContext = { kind: "agent", selection: {
+    companyId: input.companyId, userId: input.responsibleUserId, agentId: input.agentId, adapterType: input.adapterType, binding: input.binding,
+    model: input.config.model, runnerProvider: input.config.provider, acpxAgent: input.config.acpxAgent,
+    allowUninstalledPersonal: input.allowUninstalledPersonal, allowUninstalledShared: input.allowUninstalledShared, allowLegacyValidation: input.allowLegacyValidation,
+  } };
   let selection = await service.select({
     ...input,
     userId: input.responsibleUserId,
@@ -284,13 +290,13 @@ export async function prepareManagedAiRuntime(
         .from(companySecrets).where(and(eq(companySecrets.companyId, input.companyId), eq(companySecrets.id, credentialRef.secretId))).limit(1))[0];
     };
     const { value, freshness } = await (async () => {
-      if (noAuth) return { value: "", freshness: undefined };
+      if (noAuth) return { value: await service.runtimeCredential(selection, useContext), freshness: undefined };
       // Recovering a rotated quota token can advance the secret version during
       // the first read. Re-read the saved credential, retaining the epoch guard
       // against a concurrent reconnect or explicit rotation.
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const before = await readFreshness();
-        const value = await service.runtimeCredential(selection);
+        const value = await service.runtimeCredential(selection, useContext);
         const after = await readFreshness();
         if (before && after && before.version === after.version && before.epoch === after.epoch) {
           return { value, freshness: after };
@@ -364,7 +370,7 @@ export async function prepareManagedAiRuntime(
         ownerUserId: selection.grant.subjectUserId, credential: value,
       };
       attribution.subscriptionId = await subscriptionService(db).register(subscription);
-      void refreshSubscriptionConnection(db, subscription, attribution.subscriptionId);
+      void refreshSubscriptionConnection(db, subscription, attribution.subscriptionId, undefined, useContext);
     }
     const generation = createHash("sha256")
       .update(value)

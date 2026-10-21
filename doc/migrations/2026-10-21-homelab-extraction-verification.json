@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-21",
+  "branch": "migration/extract-homelab-paperclip-runtime-and-tests",
+  "nativeFilesPreserved": 195,
+  "intentionalDeletionsPreserved": 5,
+  "relocationsHashVerified": 367,
+  "nonCacheRelocations": 324,
+  "homelabApplicationCodeResidue": [],
+  "deploymentFilesUnchanged": 17,
+  "kustomizationResourceReferencesValid": 6,
+  "pythonFixture": {
+    "passed": 180,
+    "seconds": 21.539,
+    "exit": 0,
+    "OOMKilled": false
+  },
+  "originalDirtyCheckoutUntouched": true,
+  "forkMasterUnchanged": true,
+  "gitIndexesEmpty": true,
+  "uncommitted": true,
+  "unpublished": true,
+  "fullBuildTypecheckRun": false,
+  "review": "Independent source correspondence, repository boundary and final migration documentation reviews passed",
+  "limitations": [
+    "No full frozen dependency install/build/type graph",
+    "Historical scripts/workflows preserved inactive; not ported or enabled",
+    "No Git history rewrite; old history/branches retain past contents",
+    "No live/provider/deployment/migration actions"
+  ],
+  "gitStateScope": "The uncommitted/unpublished/index fields record the extraction verification before the subsequent explicit user authorization to commit and push."
+}

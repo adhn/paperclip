@@ -4,6 +4,7 @@ import { SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "./environment-custom-image-
 import { and, desc, eq, inArray, isNull, ne, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  admissionAttempts,
   agents,
   builtInManagedResources,
   companies,
@@ -1651,6 +1652,11 @@ export function environmentService(db: Db) {
         remoteExecutionTermination?: Record<string, unknown>;
       },
     ) => {
+      const [owned] = await db.select({ lease: environmentLeases }).from(environmentLeases)
+        .innerJoin(admissionAttempts, and(eq(admissionAttempts.companyId, environmentLeases.companyId),
+          sql`${admissionAttempts.id}::text = ${environmentLeases.metadata}->>'admissionAttemptId'`))
+        .where(and(eq(environmentLeases.id, id), inArray(admissionAttempts.state, ["reserved", "starting", "stopping", "uncertain"])));
+      if (owned) return toEnvironmentLease(owned.lease);
       const now = new Date();
       const row = await db
         .update(environmentLeases)
@@ -1786,6 +1792,9 @@ export function environmentService(db: Db) {
           and(
             eq(environmentLeases.heartbeatRunId, heartbeatRunId),
             eq(environmentLeases.status, "active"),
+            sql`not exists (select 1 from ${admissionAttempts} where ${admissionAttempts.companyId} = ${environmentLeases.companyId}
+              and ${admissionAttempts.id}::text = ${environmentLeases.metadata}->>'admissionAttemptId'
+              and ${admissionAttempts.state} in ('reserved','starting','stopping','uncertain'))`,
           ),
         )
         .returning();

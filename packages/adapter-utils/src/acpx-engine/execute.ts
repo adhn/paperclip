@@ -1,4 +1,4 @@
-import { cancellableSandboxStartup } from "./startup-cancellation.js";
+import { AcpxStartupCancellationError, AcpxStartupCleanupError, associateStartupRecoveryLease, cancellableSandboxStartup } from "./startup-cancellation.js";
 import { withAdapterExecutionPhase, type AdapterExecutionPhase } from "../execution-phase.js";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
@@ -150,7 +150,8 @@ import {
   type ChildStderrState,
   type RuntimeCacheEntry,
 } from "./run-site-host.js";
-import { createSandboxRunSite, type SandboxRunSite } from "./run-site-sandbox.js";
+import { retainSessionCleanup } from "./session-reuse-store.js";
+import { AcpxStagedRuntimeCleanupError, registerStagingLease, retainStagingLease, stagingLeaseIsRetained, inspectStagingLeaseRetention, createSandboxRunSite, type SandboxRunSite } from "./run-site-sandbox.js";
 import {
   createRuntimeSpanRunner,
   emitRunPhaseTiming,
@@ -1745,31 +1746,23 @@ async function disposeFreshStagedRuntime(input: {
 }): Promise<void> {
   const runtimeRootDir = input.stagedRuntime.runtimeRootDir;
   if (!runtimeRootDir) return;
-  try {
-    await runAdapterExecutionTargetShellCommand(
-      input.runId,
-      input.target,
-      `rm -rf ${shellQuote(runtimeRootDir)}`,
-      {
-        cwd: input.cwd,
-        env: {},
-        timeoutSec: Math.max(input.timeoutSec, 15),
-        graceSec: 20,
-        onLog: input.onLog,
-      },
-    );
-  } catch (err) {
-    await input.onLog(
-      "stderr",
-      `[paperclip] Failed to dispose the fresh staged runtime after a managed-home seam error: ${
-        err instanceof Error ? err.message : String(err)
-      }\n`,
-    );
-  }
+  await runAdapterExecutionTargetShellCommand(
+    input.runId,
+    input.target,
+    `rm -rf ${shellQuote(runtimeRootDir)}`,
+    {
+      cwd: input.cwd,
+      env: {},
+      timeoutSec: Math.max(input.timeoutSec, 15),
+      graceSec: 20,
+      onLog: input.onLog,
+    },
+  );
 }
 
 async function buildRuntime(input: {
   ctx: AdapterExecutionContext;
+  startupRecovery: ReturnType<typeof cancellableSandboxStartup>;
   engine: AcpxEngineSettings;
   deps: AcpxEngineExecutorOptions;
   // The run resource ledger. `executeAcpxEngine` creates the one ledger for the
@@ -2333,190 +2326,273 @@ async function buildRuntime(input: {
   // and the launch-env finalizer) and reads the site's results back onto the
   // prepared-runtime fields, so the existing settlement path stays unchanged.
   let sandboxSite: SandboxRunSite | null = null;
-  if (useRemoteProcessSession && executionTarget?.kind === "remote") {
-    const remoteTarget = executionTarget;
-    sandboxSite = createSandboxRunSite({
-      ledger: input.ledger,
-      stagedRuntimes,
-      stagingLocks,
-      now: nowMs,
-      idleMs: input.stagedIdleMs,
-      sessionCwd,
-      spawnCwd: cwd,
-      target: remoteTarget,
-      env,
-      isCompatibleResume,
-      stage: (assets) =>
-        stageAcpRemoteRuntime({
-          runId,
-          target: remoteTarget,
-          adapterKey: input.engine.adapterType,
-          workspaceLocalDir: cwd,
-          workspaceRemoteDir: sessionCwd,
-          timeoutSec,
-          assets,
-          additionalSources,
-          onLog: input.ctx.onLog,
-          onRuntimeProgress: input.ctx.onRuntimeProgress,
-          runtimeSpan: input.stageRuntimeSpan,
-        }),
-      seedManagedHome: input.deps.prepareRemoteManagedHome
-        ? async (stage) => {
-            const seeded = await input.deps.prepareRemoteManagedHome!({
-              acpxAgent,
-              companyId: agent.companyId,
-              runId,
-              config,
-              executionTarget: remoteTarget,
-              workspaceLocalDir: cwd,
-              timeoutSec,
-              env,
-              onLog: input.ctx.onLog,
-              onRuntimeProgress: input.ctx.onRuntimeProgress,
-              skillsBundleDir: claudeSkillsBundleDir,
-              stage,
-            });
-            return {
-              stagedRuntime: seeded.stagedRuntime,
-              teardown: seeded.teardown ?? null,
-              dispose: seeded.disposeStaged ?? null,
-            };
-          }
-        : undefined,
-      disposeFreshStagedRuntime: (freshStagedRuntime) =>
-        disposeFreshStagedRuntime({
-          runId,
-          target: remoteTarget,
-          stagedRuntime: freshStagedRuntime,
-          cwd: sessionCwd,
-          timeoutSec,
-          onLog: input.ctx.onLog,
-        }),
-      measureStageStep: (run) => measureStartupStep(input.ctx, nowMs, "stage.sync", run, stepMetrics),
-      publishStagedProjectHints: (stagedProjectDirs) => {
-        const shapedHints = shapePaperclipWorkspaceEnvForExecution({
-          workspaceCwd: effectiveWorkspaceCwd,
-          workspaceWorktreePath,
-          workspaceHints,
-          executionTargetIsRemote,
-          executionCwd: effectiveExecutionCwd,
-          stagedProjectDirs,
-        }).workspaceHints;
-        if (shapedHints.length > 0) {
-          env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(shapedHints);
-        }
-      },
-      onReuseLog: () =>
-        input.ctx.onLog(
-          "stdout",
-          "[paperclip] Reusing the staged in-sandbox runtime for this resumed session (no workspace re-ship / managed-home re-seed).\n",
-        ),
-      startPaperclipBridge: (runtimeRootDir) =>
-        startAdapterExecutionTargetPaperclipBridge({
-          runId,
-          target: { ...remoteTarget, streamRunLogs: false },
-          runtimeRootDir,
-          adapterKey: input.engine.adapterType,
-          timeoutSec,
-          hostApiToken: env.PAPERCLIP_API_KEY,
-          enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(remoteTarget),
-          duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(remoteTarget),
-          onLog: input.ctx.onLog,
-          getRuntimeParentContext: input.getRuntimeParentContext,
-          runtimeSpan: input.runtimeSpan,
-        }),
-      startProcessSessionBridge: ({ runtimeRootDir, launchEnv }) =>
-        startAdapterExecutionTargetProcessSessionBridge({
-          runId,
-          target: remoteTarget,
-          runtimeRootDir,
-          adapterKey: input.engine.adapterType,
-          command: "sh",
-          args: ["-lc", `exec ${agentCommandShell}`],
-          cwd: sessionCwd,
-          env: launchEnv,
-          timeoutSec,
-          onLog: input.ctx.onLog,
-          getRuntimeParentContext: input.getRuntimeParentContext,
-          runtimeSpan: input.runtimeSpan,
-          streamOutputViaSession: streamAgentSessionOutput,
-        }),
-      measureBridgeStep: (step, run) =>
-        measureStartupStep(input.ctx, nowMs, step, run, concurrentBridgeStepMetrics),
-      finalizeLaunchEnv: (contributions) =>
-        finalizeLaunchEnvironment(env, contributions, {
-          acpxAgent,
-          inheritHostEnvironment: !useRemoteProcessSession,
-        }).env,
-      onPaperclipBridgeLog: () =>
-        input.ctx.onLog("stdout", "[paperclip] Sandbox ACP API callback bridge enabled for this run.\n"),
-      stopBridges: async ({ controlBridge, agentBridge }) => {
-        await Promise.allSettled([agentBridge?.stop(), controlBridge?.stop()]);
-        if (remoteManagedHomeTeardown) {
-          await remoteManagedHomeTeardown().catch(() => {});
-        }
-      },
-    });
-    // Place the workspace (stage fresh or reuse the already-staged runtime) under
-    // the per-session staging lease, then read the staged result back onto the
-    // prepared-runtime fields the settlement path consumes.
-    const placeWorkspaceStart = nowMs();
-    await sandboxSite.placeWorkspace({ sessionKey } as unknown as AcpRunContext);
-    await emitRunPhaseTiming(input.ctx, "place_workspace", nowMs() - placeWorkspaceStart, "ok");
-    const placedStaged = sandboxSite.staged;
-    stagedRuntime = placedStaged?.stagedRuntime ?? null;
-    remoteManagedHomeTeardown = placedStaged?.teardown ?? null;
-    remoteStagingDispose = placedStaged?.dispose ?? null;
-    remoteStagingEnvDelta = placedStaged?.envDelta ?? null;
-    sessionStagingLeaseRelease = sandboxSite.stagingLeaseRelease;
-  }
-  // Once the skill bundle is staged, rewrite the prompt and the identity onto
-  // the in-sandbox copy. This code runs here, after `placeWorkspace` resolves
-  // `stagedRuntime`. It runs on every invocation, both a fresh stage and a
-  // compatible resume. It never runs inside the `prepareRemoteManagedHome`
-  // seam, because a compatible resume never calls that seam again.
-  // `skillPromptInstructions` and `skillsIdentity` already fed `fingerprint`
-  // above, with the host-independent identity. So this rewrite never reaches
-  // the fingerprint: it only replaces the host bundle path with the
-  // in-sandbox path, in the local copies used for the returned prompt,
-  // identity, and command notes.
-  if (acpxAgent === "claude" && stagedRuntime && claudeSkillsBundleDir) {
-    const inSandboxSkillsRoot =
-      stagedRuntime.assetDirs.skills ??
-      path.posix.join(
-        stagedRuntime.runtimeRootDir ??
-          path.posix.join(stagedRuntime.workspaceRemoteDir ?? cwd, ".paperclip-runtime", acpxAgent),
-        "skills",
-      );
-    const rebaseToSandbox = (value: string) => value.split(claudeSkillsBundleDir!).join(inSandboxSkillsRoot);
-    skillPromptInstructions = rebaseToSandbox(skillPromptInstructions);
-    skillsIdentity = {
-      ...skillsIdentity,
-      skillRoot: typeof skillsIdentity.skillRoot === "string"
-        ? rebaseToSandbox(skillsIdentity.skillRoot)
-        : skillsIdentity.skillRoot,
-    };
-    for (let i = 0; i < skillCommandNotes.length; i += 1) {
-      skillCommandNotes[i] = rebaseToSandbox(skillCommandNotes[i]!);
-    }
-  }
-  // Both bridge starts run under one try so a failure at EITHER — including the
-  // paperclip callback bridge — fires the same abandon-path cleanup. The
-  // paperclip bridge starts after the workspace + managed home were already
-  // staged and the per-session staging lease is already held, so leaving it
-  // outside the catch would strand the lease (and the staged temp) on a
-  // start failure and deadlock the next run of this session.
   let paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null = null;
   let processSessionBridge: AdapterExecutionTargetProcessSessionBridgeHandle | null = null;
   let runtimeEnv: Record<string, string> = {};
-  const startTransportStart = nowMs();
+  let startTransportStart: number | null = null;
+  let unwindPromise: Promise<never> | undefined;
+  const unwindBuild = (original: unknown): Promise<never> => {
+    if (!unwindPromise) {
+      unwindPromise = (async () => {
+        const siteStaged = sandboxSite?.staged;
+        const ownedStaged = stagedRuntime ?? siteStaged?.stagedRuntime ?? null;
+        const ownedRelease = sessionStagingLeaseRelease ?? sandboxSite?.stagingLeaseRelease ?? null;
+        const ownedTeardown = remoteManagedHomeTeardown ?? siteStaged?.teardown;
+        const ownedDispose = remoteStagingDispose ?? siteStaged?.dispose ?? null;
+        const control = sandboxSite?.controlBridge ?? paperclipBridge;
+        const agentBridge = sandboxSite?.agentBridge ?? processSessionBridge;
+        const priorHeld = ownedRelease ? inspectStagingLeaseRetention(ownedRelease) : undefined;
+        let startupFacts = input.startupRecovery.inspect();
+        let startupUncertainty: AcpxStagedRuntimeCleanupError | undefined;
+        const retainFailure = (failures: readonly unknown[], outcomes?: unknown): never => {
+          const error = new AcpxStagedRuntimeCleanupError(failures, ownedStaged,
+            { originalBuildFailure: original, startupRecovery: input.startupRecovery, operations: startupFacts.operations,
+              control, agentBridge, priorHeld, startupUncertainty, outcomes, cleanupCallbacks, release: ownedRelease, site: sandboxSite });
+          retainStagingLease(ownedRelease, error);
+          if (ownedRelease && stagingLeaseIsRetained(ownedRelease) && startupFacts.operations.length) input.startupRecovery.associateRecoveryLease(ownedRelease);
+          throw error;
+        };
+        if (priorHeld !== undefined) {
+          const first = priorHeld instanceof AcpxStagedRuntimeCleanupError ? AcpxStagedRuntimeCleanupError.inspect(priorHeld)!.orderedFailures : [priorHeld];
+          startupUncertainty = priorHeld === original && original instanceof AcpxStagedRuntimeCleanupError ? original
+            : new AcpxStagedRuntimeCleanupError([...first, original], ownedStaged,
+              { originalBuildFailure: original, priorHeld, control, agentBridge, release: ownedRelease, site: sandboxSite });
+          retainStagingLease(ownedRelease, startupUncertainty);
+        }
+        const cleanupCallbacks: Array<{ kind: string; promise: Promise<unknown>; outcome?: PromiseSettledResult<unknown> }> = [];
+        const refreshStartupHold = () => {
+          startupFacts = input.startupRecovery.inspect();
+          if (!startupUncertainty && startupFacts.stopAttempt && startupFacts.operations.length) {
+            startupUncertainty = new AcpxStagedRuntimeCleanupError([original], ownedStaged,
+              { originalBuildFailure: original, startupRecovery: input.startupRecovery, operations: startupFacts.operations,
+                control, agentBridge, release: ownedRelease, site: sandboxSite, cleanupCallbacks });
+            retainStagingLease(ownedRelease, startupUncertainty);
+            if (ownedRelease && stagingLeaseIsRetained(ownedRelease)) input.startupRecovery.associateRecoveryLease(ownedRelease);
+          }
+          return startupUncertainty;
+        };
+        const callCleanup = async (kind: string, callback: () => unknown) => {
+          const promise = Promise.resolve().then(() => {
+            if (refreshStartupHold()) throw startupUncertainty;
+            return callback();
+          });
+          const record: typeof cleanupCallbacks[number] = { kind, promise }; cleanupCallbacks.push(record);
+          try { const value = await promise; record.outcome = { status: "fulfilled", value }; return value; }
+          catch (reason) { record.outcome = { status: "rejected", reason }; throw reason; }
+          finally { refreshStartupHold(); }
+        };
+        refreshStartupHold();
+        // Independently join every admitted bridge stop; callback return is not
+        // a physical retirement receipt and cannot erase earlier uncertainty.
+        const stops = await Promise.allSettled([
+          Promise.resolve().then(() => control?.stop()), Promise.resolve().then(() => agentBridge?.stop()),
+        ]);
+        refreshStartupHold();
+        const failed = stops.filter((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+        if (failed.length) retainFailure([original, ...failed.map(outcome => outcome.reason)], stops);
+        if (startupUncertainty) throw startupUncertainty;
+        try {
+          const restored = await callCleanup("restore", () => ownedTeardown?.()) as Awaited<ReturnType<NonNullable<typeof ownedTeardown>>> | undefined;
+          if (refreshStartupHold()) throw startupUncertainty;
+          if (restored && !restored.ok) retainFailure([original, restored], stops);
+        } catch (error) {
+          if (error instanceof AcpxStagedRuntimeCleanupError) throw error;
+          retainFailure([original, error], stops);
+        }
+        if (refreshStartupHold()) throw startupUncertainty;
+        const existing = stagedRuntimes.get(sessionKey);
+        try { await callCleanup("dispose", () => ownedDispose?.()); }
+        catch (error) { retainFailure([original, error], stops); }
+        if (refreshStartupHold()) throw startupUncertainty;
+        if (existing && ownedStaged && existing.stagedRuntime === ownedStaged && stagedRuntimes.get(sessionKey) === existing) stagedRuntimes.delete(sessionKey);
+        if (refreshStartupHold()) throw startupUncertainty;
+        ownedRelease?.();
+        if (startTransportStart !== null) await emitRunPhaseTiming(input.ctx, "start_transport", nowMs() - startTransportStart, "failed").catch(() => {});
+        throw original;
+      })();
+      void unwindPromise.catch(() => {});
+    }
+    return unwindPromise;
+  };
   try {
+    if (useRemoteProcessSession && executionTarget?.kind === "remote") {
+      const remoteTarget = executionTarget;
+      sandboxSite = createSandboxRunSite({
+        signal: input.ctx.signal,
+        startupRecovery: input.startupRecovery,
+        ledger: input.ledger,
+        stagedRuntimes,
+        stagingLocks,
+        now: nowMs,
+        idleMs: input.stagedIdleMs,
+        sessionCwd,
+        spawnCwd: cwd,
+        target: remoteTarget,
+        env,
+        isCompatibleResume,
+        stage: (assets) =>
+          stageAcpRemoteRuntime({
+            runId,
+            target: remoteTarget,
+            adapterKey: input.engine.adapterType,
+            workspaceLocalDir: cwd,
+            workspaceRemoteDir: sessionCwd,
+            timeoutSec,
+            assets,
+            additionalSources,
+            onLog: input.ctx.onLog,
+            onRuntimeProgress: input.ctx.onRuntimeProgress,
+            runtimeSpan: input.stageRuntimeSpan,
+          }),
+        seedManagedHome: input.deps.prepareRemoteManagedHome
+          ? async (stage) => {
+              const seeded = await input.deps.prepareRemoteManagedHome!({
+                acpxAgent,
+                companyId: agent.companyId,
+                runId,
+                config,
+                executionTarget: remoteTarget,
+                workspaceLocalDir: cwd,
+                timeoutSec,
+                env,
+                onLog: input.ctx.onLog,
+                onRuntimeProgress: input.ctx.onRuntimeProgress,
+                skillsBundleDir: claudeSkillsBundleDir,
+                stage,
+              });
+              return {
+                stagedRuntime: seeded.stagedRuntime,
+                teardown: seeded.teardown ?? null,
+                dispose: seeded.disposeStaged ?? null,
+              };
+            }
+          : undefined,
+        disposeFreshStagedRuntime: (freshStagedRuntime) =>
+          disposeFreshStagedRuntime({
+            runId,
+            target: remoteTarget,
+            stagedRuntime: freshStagedRuntime,
+            cwd: sessionCwd,
+            timeoutSec,
+            onLog: input.ctx.onLog,
+          }),
+        measureStageStep: (run) => measureStartupStep(input.ctx, nowMs, "stage.sync", run, stepMetrics),
+        publishStagedProjectHints: (stagedProjectDirs) => {
+          const shapedHints = shapePaperclipWorkspaceEnvForExecution({
+            workspaceCwd: effectiveWorkspaceCwd,
+            workspaceWorktreePath,
+            workspaceHints,
+            executionTargetIsRemote,
+            executionCwd: effectiveExecutionCwd,
+            stagedProjectDirs,
+          }).workspaceHints;
+          if (shapedHints.length > 0) {
+            env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(shapedHints);
+          }
+        },
+        onReuseLog: () =>
+          input.ctx.onLog(
+            "stdout",
+            "[paperclip] Reusing the staged in-sandbox runtime for this resumed session (no workspace re-ship / managed-home re-seed).\n",
+          ),
+        startPaperclipBridge: (runtimeRootDir) =>
+          startAdapterExecutionTargetPaperclipBridge({
+            runId,
+            target: { ...remoteTarget, streamRunLogs: false },
+            runtimeRootDir,
+            adapterKey: input.engine.adapterType,
+            timeoutSec,
+            hostApiToken: env.PAPERCLIP_API_KEY,
+            enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(remoteTarget),
+            duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(remoteTarget),
+            onLog: input.ctx.onLog,
+            getRuntimeParentContext: input.getRuntimeParentContext,
+            runtimeSpan: input.runtimeSpan,
+          }),
+        startProcessSessionBridge: ({ runtimeRootDir, launchEnv }) =>
+          startAdapterExecutionTargetProcessSessionBridge({
+            runId,
+            target: remoteTarget,
+            runtimeRootDir,
+            adapterKey: input.engine.adapterType,
+            command: "sh",
+            args: ["-lc", `exec ${agentCommandShell}`],
+            cwd: sessionCwd,
+            env: launchEnv,
+            timeoutSec,
+            onLog: input.ctx.onLog,
+            getRuntimeParentContext: input.getRuntimeParentContext,
+            runtimeSpan: input.runtimeSpan,
+            streamOutputViaSession: streamAgentSessionOutput,
+          }),
+        measureBridgeStep: (step, run) =>
+          measureStartupStep(input.ctx, nowMs, step, run, concurrentBridgeStepMetrics),
+        finalizeLaunchEnv: (contributions) =>
+          finalizeLaunchEnvironment(env, contributions, {
+            acpxAgent,
+            inheritHostEnvironment: !useRemoteProcessSession,
+          }).env,
+        onPaperclipBridgeLog: () =>
+          input.ctx.onLog("stdout", "[paperclip] Sandbox ACP API callback bridge enabled for this run.\n"),
+        stopBridges: async ({ controlBridge, agentBridge }) => {
+          await Promise.allSettled([agentBridge?.stop(), controlBridge?.stop()]);
+          if (remoteManagedHomeTeardown) {
+            await remoteManagedHomeTeardown().catch(() => {});
+          }
+        },
+      });
+      // Place the workspace (stage fresh or reuse the already-staged runtime) under
+      // the per-session staging lease, then read the staged result back onto the
+      // prepared-runtime fields the settlement path consumes.
+      const placeWorkspaceStart = nowMs();
+      await sandboxSite.placeWorkspace({ sessionKey } as unknown as AcpRunContext);
+      await emitRunPhaseTiming(input.ctx, "place_workspace", nowMs() - placeWorkspaceStart, "ok");
+      const placedStaged = sandboxSite.staged;
+      stagedRuntime = placedStaged?.stagedRuntime ?? null;
+      remoteManagedHomeTeardown = placedStaged?.teardown ?? null;
+      remoteStagingDispose = placedStaged?.dispose ?? null;
+      remoteStagingEnvDelta = placedStaged?.envDelta ?? null;
+      sessionStagingLeaseRelease = sandboxSite.stagingLeaseRelease;
+    }
+    // Once the skill bundle is staged, rewrite the prompt and the identity onto
+    // the in-sandbox copy. This code runs here, after `placeWorkspace` resolves
+    // `stagedRuntime`. It runs on every invocation, both a fresh stage and a
+    // compatible resume. It never runs inside the `prepareRemoteManagedHome`
+    // seam, because a compatible resume never calls that seam again.
+    // `skillPromptInstructions` and `skillsIdentity` already fed `fingerprint`
+    // above, with the host-independent identity. So this rewrite never reaches
+    // the fingerprint: it only replaces the host bundle path with the
+    // in-sandbox path, in the local copies used for the returned prompt,
+    // identity, and command notes.
+    if (acpxAgent === "claude" && stagedRuntime && claudeSkillsBundleDir) {
+      const inSandboxSkillsRoot =
+        stagedRuntime.assetDirs.skills ??
+        path.posix.join(
+          stagedRuntime.runtimeRootDir ??
+            path.posix.join(stagedRuntime.workspaceRemoteDir ?? cwd, ".paperclip-runtime", acpxAgent),
+          "skills",
+        );
+      const rebaseToSandbox = (value: string) => value.split(claudeSkillsBundleDir!).join(inSandboxSkillsRoot);
+      skillPromptInstructions = rebaseToSandbox(skillPromptInstructions);
+      skillsIdentity = {
+        ...skillsIdentity,
+        skillRoot: typeof skillsIdentity.skillRoot === "string"
+          ? rebaseToSandbox(skillsIdentity.skillRoot)
+          : skillsIdentity.skillRoot,
+      };
+      for (let i = 0; i < skillCommandNotes.length; i += 1) {
+        skillCommandNotes[i] = rebaseToSandbox(skillCommandNotes[i]!);
+      }
+    }
+    // The same owned unwind covers acquired staging, bridge bring-up, and
+    // every later callback/property read through the prepared return.
+    startTransportStart = nowMs();
     if (useRemoteProcessSession && sandboxSite) {
       // The sandbox run site brings up both host-side bridges concurrently, keeps
       // the one paperclip-env → process-session-launch dependency at a single
       // sequencing point, settles both starts, and returns the started handles
       // plus the finalized launch env. On a partial failure it stops nothing and
-      // rethrows; the catch below stops whichever bridge the site started.
+      // rethrows; the canonical unwind joins stops for the actual started handles.
       const transport = await sandboxSite.startTransport({ sessionKey } as unknown as AcpRunContext);
       paperclipBridge = transport.controlBridge;
       processSessionBridge = transport.agentBridge;
@@ -2531,127 +2607,95 @@ async function buildRuntime(input: {
         inheritHostEnvironment: !useRemoteProcessSession,
       }).env;
     }
-  } catch (err) {
-    // On a partial concurrent bring-up failure, ONE bridge may have started while
-    // the other threw; `Promise.allSettled` stops whichever started so no live
-    // bridge leaks (mirrors the settlement `stopTransport` step). The site sets its
-    // started bridges before it rethrows, so read them from the site here (the
-    // local handles stay null when `startTransport` throws before it returns).
-    const startedControl = sandboxSite?.controlBridge ?? paperclipBridge;
-    const startedAgent = sandboxSite?.agentBridge ?? processSessionBridge;
-    await Promise.allSettled([startedControl?.stop(), startedAgent?.stop()]);
-    // The staged home / copy-back teardown must run even if a bridge fails to
-    // start after the workspace + managed home were already staged into the
-    // sandbox, so a refreshed credential is copied back on this error path too.
-    // This run never reaches the executor, so also fire the one-time staged-temp
-    // dispose here (it no longer rides the per-run copy-back) — the run is being
-    // abandoned, so its staged temp must be released — and release the per-session
-    // staging lease so the abandoned run does not strand the next same-session run
-    // (the run root `finally`, which normally releases it, is never reached here).
-    //
-    // Route the dispose through the same ownership-guarded removal
-    // `discardStagedRuntime` uses. When this run BORROWED the cached staged runtime
-    // (a compatible resume), the dispose releases the shared host staged-temp, so
-    // the map entry must go too — otherwise a later resume reuses an entry whose
-    // temp is already gone. The identity guard removes the entry only when the map
-    // still holds this exact staged runtime, so a fresh stage (no cache entry) and
-    // a concurrent run's entry are both left untouched.
-    await remoteManagedHomeTeardown?.().catch(() => {});
-    await releaseStagedRuntimeEntry({
-      handles: stagedRuntimes,
-      sessionKey,
-      stagedRuntime,
-      dispose: remoteStagingDispose,
-    });
-    sessionStagingLeaseRelease?.();
-    await emitRunPhaseTiming(input.ctx, "start_transport", nowMs() - startTransportStart, "failed");
-    throw err;
-  }
-  const currentSkillRoot = acpxAgent === "codex" && runtimeEnv.CODEX_HOME
-    ? path.join(runtimeEnv.CODEX_HOME, "skills")
-    : acpxAgent === "gemini" && !executionTargetIsRemote && typeof skillsIdentity.skillsHome === "string"
-      ? skillsIdentity.skillsHome
-      : null;
-  if (currentSkillRoot && Array.isArray(skillsIdentity.selectedSkills) && skillsIdentity.selectedSkills.length > 0) {
-    // Managed connection homes are disposable. A resumed conversation may
-    // remember a previous home's skill paths; supply the current root on every
-    // turn, after the remote launch environment has rebased CODEX_HOME.
-    skillPromptInstructions = [
-      `Paperclip has materialized selected runtime skills for this ACPX ${acpxAgent === "codex" ? "Codex" : "Gemini"} run.`,
-      `Skill root for this run: ${currentSkillRoot}`,
-      `Selected skills: ${skillsIdentity.selectedSkills.join(", ")}`,
-      "When a task calls for one of these skills, read its SKILL.md from this root and follow it. Resolve referenced scripts and files relative to that skill. Use this run's root even when an earlier turn used a different path.",
-      ...(acpxAgent === "gemini" && skillsIdentity.selectedSkills.includes("paperclip")
-        ? [
-          "Before calling Paperclip APIs or delivering task artifacts, read the selected paperclip skill's SKILL.md and its referenced artifact workflow. A completion comment does not upload an artifact or change task status.",
-          "Gemini's shell tool rejects command substitution. Write JSON request bodies to a workspace file and use curl --data-binary @file, or use the selected skill's helpers, instead of constructing a body with command substitution.",
-        ]
-        : []),
-    ].join("\n");
-  }
-  // The relay runs on the host with the sanitized remote launch environment.
-  // Its /usr/bin/env node shebang cannot rely on that environment's PATH.
-  const overrideCommand = processSessionBridge?.agentCommand
-    ? [process.execPath, processSessionBridge.agentCommand]
-      .map((part) => JSON.stringify(part.replaceAll("\\", "/"))).join(" ")
-    : agentCommand;
-  const overrides = overrideCommand ? { [acpxAgent]: overrideCommand } : undefined;
-  const agentRegistry = createAgentRegistry({ overrides });
-  const loggedEnv = buildInvocationEnvForLogs(env, {
-    runtimeEnv,
-    includeRuntimeKeys: ["HOME"],
-    resolvedCommand: agentCommand ?? acpxAgent,
-  });
 
-  return {
-    acpxAgent,
-    coalescePlaceholderToolUpdates,
-    mode,
-    // Remote runner-backed → the in-sandbox workspace dir; local / runner-less
-    // → the HOST cwd (`sessionCwd` resolves both). Every cwd-keyed session site
-    // reads `prepared.cwd`, so binding it once here keeps them consistent.
-    cwd: sessionCwd,
-    // Only the remote process-session lane needs the host proxy's `spawn()`
-    // `chdir` redirected off the in-sandbox `sessionCwd` and onto the host
-    // `cwd` (which is where the workspace was staged FROM, so it is host-valid).
-    // Every other lane leaves it `undefined` → acpx falls back to `cwd`.
-    hostSpawnCwd: useRemoteProcessSession ? cwd : undefined,
-    workspaceId,
-    workspaceRepoUrl,
-    workspaceRepoRef,
-    env: runtimeEnv,
-    loggedEnv,
-    stateDir,
-    permissionMode,
-    nonInteractivePermissions,
-    requestedModel,
-    requestedThinkingEffort,
-    fastMode,
-    timeoutSec,
-    timeoutResolution,
-    sessionKey,
-    fingerprint,
-    agentCommand,
-    agentRegistry,
-    processSessionBridge,
-    paperclipBridge,
-    stagedRuntime,
-    remoteManagedHomeTeardown,
-    remoteStagingDispose,
-    remoteStagingEnvDelta,
-    sessionStagingLeaseRelease,
-    remoteExecutionIdentity,
-    skillPromptInstructions,
-    skillsIdentity: {
-      ...skillsIdentity,
-      commandNotes: skillCommandNotes,
-    },
-    childStderrLogPath,
-    paperclipClaudeSettings,
-    mcpServers,
-    mcpIdentity,
-    stepMetrics,
-  };
+    const currentSkillRoot = acpxAgent === "codex" && runtimeEnv.CODEX_HOME
+      ? path.join(runtimeEnv.CODEX_HOME, "skills")
+      : acpxAgent === "gemini" && !executionTargetIsRemote && typeof skillsIdentity.skillsHome === "string"
+        ? skillsIdentity.skillsHome
+        : null;
+    if (currentSkillRoot && Array.isArray(skillsIdentity.selectedSkills) && skillsIdentity.selectedSkills.length > 0) {
+      // Managed connection homes are disposable. A resumed conversation may
+      // remember a previous home's skill paths; supply the current root on every
+      // turn, after the remote launch environment has rebased CODEX_HOME.
+      skillPromptInstructions = [
+        `Paperclip has materialized selected runtime skills for this ACPX ${acpxAgent === "codex" ? "Codex" : "Gemini"} run.`,
+        `Skill root for this run: ${currentSkillRoot}`,
+        `Selected skills: ${skillsIdentity.selectedSkills.join(", ")}`,
+        "When a task calls for one of these skills, read its SKILL.md from this root and follow it. Resolve referenced scripts and files relative to that skill. Use this run's root even when an earlier turn used a different path.",
+        ...(acpxAgent === "gemini" && skillsIdentity.selectedSkills.includes("paperclip")
+          ? [
+            "Before calling Paperclip APIs or delivering task artifacts, read the selected paperclip skill's SKILL.md and its referenced artifact workflow. A completion comment does not upload an artifact or change task status.",
+            "Gemini's shell tool rejects command substitution. Write JSON request bodies to a workspace file and use curl --data-binary @file, or use the selected skill's helpers, instead of constructing a body with command substitution.",
+          ]
+          : []),
+      ].join("\n");
+    }
+    // The relay runs on the host with the sanitized remote launch environment.
+    // Its /usr/bin/env node shebang cannot rely on that environment's PATH.
+    const overrideCommand = processSessionBridge?.agentCommand
+      ? [process.execPath, processSessionBridge.agentCommand]
+        .map((part) => JSON.stringify(part.replaceAll("\\", "/"))).join(" ")
+      : agentCommand;
+    const overrides = overrideCommand ? { [acpxAgent]: overrideCommand } : undefined;
+    const agentRegistry = createAgentRegistry({ overrides });
+    const loggedEnv = buildInvocationEnvForLogs(env, {
+      runtimeEnv,
+      includeRuntimeKeys: ["HOME"],
+      resolvedCommand: agentCommand ?? acpxAgent,
+    });
+
+    return {
+      acpxAgent,
+      coalescePlaceholderToolUpdates,
+      mode,
+      // Remote runner-backed → the in-sandbox workspace dir; local / runner-less
+      // → the HOST cwd (`sessionCwd` resolves both). Every cwd-keyed session site
+      // reads `prepared.cwd`, so binding it once here keeps them consistent.
+      cwd: sessionCwd,
+      // Only the remote process-session lane needs the host proxy's `spawn()`
+      // `chdir` redirected off the in-sandbox `sessionCwd` and onto the host
+      // `cwd` (which is where the workspace was staged FROM, so it is host-valid).
+      // Every other lane leaves it `undefined` → acpx falls back to `cwd`.
+      hostSpawnCwd: useRemoteProcessSession ? cwd : undefined,
+      workspaceId,
+      workspaceRepoUrl,
+      workspaceRepoRef,
+      env: runtimeEnv,
+      loggedEnv,
+      stateDir,
+      permissionMode,
+      nonInteractivePermissions,
+      requestedModel,
+      requestedThinkingEffort,
+      fastMode,
+      timeoutSec,
+      timeoutResolution,
+      sessionKey,
+      fingerprint,
+      agentCommand,
+      agentRegistry,
+      processSessionBridge,
+      paperclipBridge,
+      stagedRuntime,
+      remoteManagedHomeTeardown,
+      remoteStagingDispose,
+      remoteStagingEnvDelta,
+      sessionStagingLeaseRelease,
+      remoteExecutionIdentity,
+      skillPromptInstructions,
+      skillsIdentity: {
+        ...skillsIdentity,
+        commandNotes: skillCommandNotes,
+      },
+      childStderrLogPath,
+      paperclipClaudeSettings,
+      mcpServers,
+      mcpIdentity,
+      stepMetrics,
+    };
+  } catch (error) {
+    return unwindBuild(error);
+  }
 }
 
 function sessionConfigOptions(prepared: AcpxPreparedRuntime): Array<{ key: string; value: string }> {
@@ -2790,28 +2834,73 @@ function mergeRuntimeEnvironment(
   return merged;
 }
 
-// Stop both host-side bridges in one `allSettled`. This is the settlement
-// `stopTransport` effect. The bridge tokens are run-scoped, so they die with the
-// bridges here (Amendment B).
-async function stopRunTransport(prepared: AcpxPreparedRuntime): Promise<void> {
-  await Promise.allSettled([
-    prepared.processSessionBridge?.stop(),
-    prepared.paperclipBridge?.stop(),
-  ]);
+// Join both admitted bridge stop attempts independently. Returned callbacks are
+// local acknowledgments, not proof of physical or token retirement; any unknown
+// result retains the exact resources and admission hold.
+// Strong in-process custody after fail-soft settlement; no restart guarantee.
+const uncertainPreparedCleanup = new Map<AcpxPreparedRuntime, AcpxStagedRuntimeCleanupError>();
+/** Exact in-process recovery facts; accepts the original prepared object only. */
+export function inspectRetainedAcpxCleanup(prepared: object) {
+  const error = uncertainPreparedCleanup.get(prepared as AcpxPreparedRuntime);
+  if (!error) return Object.freeze([]);
+  const facts = AcpxStagedRuntimeCleanupError.inspect(error)!;
+  return Object.freeze([Object.freeze({ orderedFailures: Object.freeze([...facts.orderedFailures]),
+    stagedRuntime: facts.stagedRuntime, runtimeRootDir: facts.runtimeRootDir,
+    resources: facts.resources && typeof facts.resources === "object" ? Object.freeze({ ...facts.resources }) : facts.resources })]);
+}
+function rememberPreparedCleanup(prepared: AcpxPreparedRuntime, error: AcpxStagedRuntimeCleanupError): void {
+  const original = uncertainPreparedCleanup.get(prepared);
+  let retained = error;
+  if (original && original !== error) {
+    const first = AcpxStagedRuntimeCleanupError.inspect(original)!;
+    const next = AcpxStagedRuntimeCleanupError.inspect(error)!;
+    retained = new AcpxStagedRuntimeCleanupError([...first.orderedFailures, ...next.orderedFailures], prepared.stagedRuntime,
+      Object.freeze({ prepared, original, subsequent: error }));
+  }
+  uncertainPreparedCleanup.set(prepared, retained);
+  retainStagingLease(prepared.sessionStagingLeaseRelease, retained);
+}
+const runtimeHandshakeHolds = new WeakMap<AcpRuntime, AcpxStagedRuntimeCleanupError>();
+const runtimeCleanupHolds = new WeakMap<AcpRuntime, Map<AcpRuntimeHandle, AcpxStagedRuntimeCleanupError>>();
+function holdRuntimeCleanup(runtime: AcpRuntime, handle: AcpRuntimeHandle, error: AcpxStagedRuntimeCleanupError): void {
+  let holds = runtimeCleanupHolds.get(runtime);
+  if (!holds) { holds = new Map(); runtimeCleanupHolds.set(runtime, holds); }
+  if (!holds.has(handle)) holds.set(handle, error);
+}
+const runtimeCloseAttempts = new WeakMap<AcpRuntime, Map<AcpRuntimeHandle, Promise<void>>>();
+function closeRuntimeOnce(runtime: AcpRuntime, input: { handle: AcpRuntimeHandle; reason: string; discardPersistentState: boolean }): Promise<void> {
+  const held = runtimeCleanupHolds.get(runtime)?.get(input.handle);
+  if (held) return Promise.reject(held);
+  let attempts = runtimeCloseAttempts.get(runtime);
+  if (!attempts) { attempts = new Map(); runtimeCloseAttempts.set(runtime, attempts); }
+  const original = attempts.get(input.handle);
+  if (original) return original;
+  const attempt = Promise.resolve().then(() => runtime.close(input));
+  attempts.set(input.handle, attempt);
+  void attempt.then(() => { if (attempts!.get(input.handle) === attempt) attempts!.delete(input.handle); }, () => {});
+  return attempt;
+}
+function cleanupUnknown(prepared: AcpxPreparedRuntime): boolean {
+  return uncertainPreparedCleanup.has(prepared) || stagingLeaseIsRetained(prepared.sessionStagingLeaseRelease);
 }
 
-// The site sync-back. This is the settlement `syncBack` effect. It runs AFTER the
-// bridges stop (mirrors the CLI finally: stop bridge → restore workspace). It
-// fires the codex auth copy-back via `restoreWorkspace()` and removes staged temp
-// dirs. The seam logs and swallows its own failures — an unclean-teardown
-// copy-back miss is the accepted, loud `refresh_token_reused` residual on the
-// next host Codex use, never silent HOST-credential corruption — so a teardown
-// fault never masks or fails the run result here. It still returns the restore
-// outcome, so the caller can record a failure on the run record; the run's exit
-// code and status stay exactly what the turn produced.
-// The per-session staging lease does NOT release here. The settlement releases
-// it last, in its own `finally`, so a same-session second run cannot re-stage
-// until this run fully settles and the caller observes the result.
+async function stopRunTransport(prepared: AcpxPreparedRuntime): Promise<void> {
+  const outcomes = await Promise.allSettled([
+    Promise.resolve().then(() => prepared.processSessionBridge?.stop()),
+    Promise.resolve().then(() => prepared.paperclipBridge?.stop()),
+  ]);
+  const failures = outcomes.filter((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+  if (failures.length) {
+    const error = new AcpxStagedRuntimeCleanupError(failures.map(outcome => outcome.reason),
+      prepared.stagedRuntime,
+      { processSessionBridge: prepared.processSessionBridge, paperclipBridge: prepared.paperclipBridge, release: prepared.sessionStagingLeaseRelease });
+    rememberPreparedCleanup(prepared, error);
+    throw error;
+  }
+}
+
+// The site sync-back returns its factual restore outcome. The caller retains
+// actual resources and lease on uncertainty; this is not a physical-stop proof.
 async function syncBackManagedHome(prepared: AcpxPreparedRuntime): Promise<WorkspaceRestoreOutcome> {
   if (!prepared.remoteManagedHomeTeardown) {
     return { ok: true };
@@ -2835,9 +2924,8 @@ interface RuntimeSettlementPlan {
   // Drop a matching warm entry after a direct close (the pre-turn and turn-error
   // paths remove a warm-hit entry that failed).
   readonly dropWarmEntry: boolean;
-  // Record a direct-close error to the run log; a warm_or_close error is
-  // swallowed. This keeps today's split (the failure paths log, the turn path
-  // swallows).
+  // Historical logging preference; actual close uncertainty is retained
+  // independently of whether this originating path requested a run-log entry.
   readonly recordCloseError: boolean;
   // Cancel the running turn with this reason before the close (the turn-error
   // path cancels before it closes). Null on every other path.
@@ -2905,6 +2993,7 @@ function isAcpxHandshakeTransportLostError(err: unknown): err is AcpxHandshakeTr
 class HandshakeAbandonmentFence {
   private sealedFlag = false;
   private lateHandle: AcpRuntimeHandle | null = null;
+  admittedPromise: Promise<AcpRuntimeHandle> | null = null;
 
   get isSealed(): boolean {
     return this.sealedFlag;
@@ -2943,15 +3032,17 @@ function guardEnsureSession(params: {
   fence: HandshakeAbandonmentFence;
   isTransportLost: () => boolean;
   onLateHandleAfterSeal: (handle: AcpRuntimeHandle) => void;
-  onLateRejection: () => void;
+  onLateRejection: (error: unknown) => void;
+  onObserverFailure: (error: unknown) => void;
 }): Promise<AcpRuntimeHandle> {
   const sessionPromise = params.call();
+  params.fence.admittedPromise = sessionPromise;
   let outcome: "pending" | "session" | "guard" = "pending";
 
   // Attached the moment the promise exists. A guard-won race still leaves
   // this promise observed for as long as it takes to settle, so it can never
   // raise an unhandled rejection.
-  sessionPromise.then(
+  void sessionPromise.then(
     (handle) => {
       if (outcome !== "guard") return;
       if (params.fence.isSealed) {
@@ -2960,11 +3051,11 @@ function guardEnsureSession(params: {
         params.fence.storeLateHandle(handle);
       }
     },
-    () => {
+    (error) => {
       if (outcome !== "guard") return;
-      params.onLateRejection();
+      params.onLateRejection(error);
     },
-  );
+  ).catch(error => { params.onObserverFailure(error); }).catch(() => {});
 
   return new Promise<AcpRuntimeHandle>((resolve, reject) => {
     let settled = false;
@@ -2977,7 +3068,16 @@ function guardEnsureSession(params: {
     }, ACPX_HANDSHAKE_TIMEOUT_MS);
     const poll = setInterval(() => {
       if (settled) return;
-      if (!params.isTransportLost()) return;
+      let lost: boolean;
+      try { lost = params.isTransportLost(); }
+      catch (error) {
+        settled = true; outcome = "guard";
+        clearTimeout(timer); clearInterval(poll);
+        params.onObserverFailure(error);
+        reject(new AcpxHandshakeTransportLostError());
+        return;
+      }
+      if (!lost) return;
       settled = true;
       outcome = "guard";
       clearTimeout(timer);
@@ -3606,14 +3706,20 @@ async function cleanupIdleStagedRuntimes(input: {
     if (input.now() - entry[1].lastUsedAt >= input.idleMs) stale.push(entry);
   }
   for (const [key, entry] of stale) {
-    const lease = await withSessionStagingLease(input.locks, key, async () => {
-      const current = input.handles.get(key);
-      if (current !== entry) return;
-      if (input.now() - current.lastUsedAt < input.idleMs) return;
-      input.handles.delete(key);
-      if (entry.dispose) await entry.dispose().catch(() => {});
-    });
-    lease.release();
+    if (input.locks.has(key)) continue;
+    try {
+      const lease = await withSessionStagingLease(input.locks, key, async () => {
+        const current = input.handles.get(key);
+        if (current !== entry) return;
+        if (input.now() - current.lastUsedAt < input.idleMs) return;
+        try { await entry.dispose?.(); }
+        catch (error) { throw new AcpxStagedRuntimeCleanupError([error], entry.stagedRuntime); }
+        if (input.handles.get(key) === entry) input.handles.delete(key);
+      });
+      lease.release();
+    } catch (error) {
+      if (!(error instanceof AcpxStagedRuntimeCleanupError)) throw error;
+    }
   }
 }
 
@@ -3677,10 +3783,10 @@ async function releaseStagedRuntimeEntry(input: {
 }): Promise<void> {
   const { handles, sessionKey, stagedRuntime, dispose } = input;
   const existing = handles.get(sessionKey);
-  if (existing && stagedRuntime && existing.stagedRuntime === stagedRuntime) {
+  if (dispose) await dispose();
+  if (existing && stagedRuntime && existing.stagedRuntime === stagedRuntime && handles.get(sessionKey) === existing) {
     handles.delete(sessionKey);
   }
-  if (dispose) await dispose().catch(() => {});
 }
 
 // Per-`sessionKey` async lease: chains each caller after the previous one so
@@ -3706,15 +3812,17 @@ async function withSessionStagingLease<T>(
   await prev.catch(() => {});
   let released = false;
   const release = () => {
-    if (released) return;
+    if (released || stagingLeaseIsRetained(release)) return;
     released = true;
     releaseGate();
     // GC the lock if no later caller has chained after us.
     if (locks.get(key) === mine) locks.delete(key);
   };
+  registerStagingLease(release);
   try {
     return { value: await fn(), release };
   } catch (error) {
+    if (error instanceof AcpxStagedRuntimeCleanupError) retainStagingLease(release, error);
     if (!released) release();
     throw error;
   }
@@ -3732,16 +3840,18 @@ async function closeWarmHandle(input: {
   entry: RuntimeCacheEntry;
   reason: string;
   discardPersistentState?: boolean;
+  onCloseFailure?: (error: unknown) => never;
 }) {
-  if (input.handles.get(input.key) === input.entry) {
-    input.handles.delete(input.key);
-  }
   clearWarmHandleTimer(input.entry);
-  const stopped = await input.entry.runtime.close({
+  const stopped = await closeRuntimeOnce(input.entry.runtime, {
     handle: input.entry.handle,
     reason: input.reason,
     discardPersistentState: input.discardPersistentState ?? false,
-  }).then(() => true, () => false);
+  }).then(() => true, error => {
+    if (input.onCloseFailure) input.onCloseFailure(error);
+    return false;
+  });
+  if (stopped && input.handles.get(input.key) === input.entry) input.handles.delete(input.key);
   flushChildStderr(input.entry.childStderrState);
   return stopped;
 }
@@ -3998,9 +4108,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       now,
       idleMs: warmIdleMs,
       closeWarmEntry: async (entry) => {
-        await entry.runtime
-          .close({ handle: entry.handle, reason: "paperclip idle cleanup", discardPersistentState: false })
-          .catch(() => {});
+        try {
+          await closeRuntimeOnce(entry.runtime, { handle: entry.handle, reason: "paperclip idle cleanup", discardPersistentState: false });
+        } catch (cause) {
+          const error = new AcpxStagedRuntimeCleanupError([cause], null, { runtime: entry.runtime, handle: entry.handle, entry });
+          holdRuntimeCleanup(entry.runtime, entry.handle, error);
+          retainSessionCleanup(entry, error);
+          throw error;
+        }
         flushChildStderr(entry.childStderrState);
       },
     });
@@ -4274,10 +4389,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // parents to its step span. On a local or SSH target
         // `spanParent.parentContext` is a no-op token, so the wrap is inert.
         const startupCancellation = cancellableSandboxStartup(ctx);
+        let buildFailed = false, originalBuildFailure: unknown;
         try {
           prepared = await runWithRuntimeParent(spanParent.parentContext, () =>
             buildRuntime({
               ctx: startupCancellation.context,
+              startupRecovery: startupCancellation,
               engine,
               deps,
               ledger: runResourceLedger,
@@ -4293,8 +4410,36 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // Capture acquired resources before the cancellation boundary so the
           // normal settlement path also releases a just-completed build.
           releaseStagingLease = prepared.sessionStagingLeaseRelease;
+        } catch (error) {
+          buildFailed = true; originalBuildFailure = error;
+          throw error;
         } finally {
-          await startupCancellation.finish();
+          try { await startupCancellation.finish(); }
+          catch (finishFailure) {
+            const facts = startupCancellation.inspect();
+            const failures = buildFailed ? [originalBuildFailure, finishFailure] : [finishFailure];
+            if (buildRuntimeSettled && facts.operations.length) {
+              const priorHeld = prepared.sessionStagingLeaseRelease ? inspectStagingLeaseRetention(prepared.sessionStagingLeaseRelease) : undefined;
+              const error = new AcpxStagedRuntimeCleanupError(failures, prepared.stagedRuntime,
+                { prepared, originalBuildFailure: buildFailed ? originalBuildFailure : undefined, finishFailure,
+                  startupRecovery: startupCancellation, operations: facts.operations, priorHeld, release: prepared.sessionStagingLeaseRelease });
+              rememberPreparedCleanup(prepared, error);
+              if (prepared.sessionStagingLeaseRelease && stagingLeaseIsRetained(prepared.sessionStagingLeaseRelease)) {
+                startupCancellation.associateRecoveryLease(prepared.sessionStagingLeaseRelease);
+                const typed = finishFailure instanceof AcpxStartupCancellationError ? AcpxStartupCancellationError.inspect(finishFailure)
+                  : finishFailure instanceof AcpxStartupCleanupError ? AcpxStartupCleanupError.inspect(finishFailure) : undefined;
+                if (typed?.operations.length) associateStartupRecoveryLease(finishFailure, prepared.sessionStagingLeaseRelease);
+              }
+              throw error;
+            }
+            if (buildFailed) {
+              if (originalBuildFailure === finishFailure) throw originalBuildFailure;
+              throw new AcpxStagedRuntimeCleanupError(failures, null,
+                { originalBuildFailure, finishFailure, startupRecovery: startupCancellation,
+                  priorHolds: Object.freeze(facts.recoveryLeases.map(release => inspectStagingLeaseRetention(release))) });
+            }
+            throw new AcpxStartupCleanupError(failures);
+          }
         }
         // Per-project staging outcomes for the referenced (mentioned) projects, surfaced back to the
         // server on the run result. A referenced project that failed to stage into the sandbox is a
@@ -4335,6 +4480,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // the reused runtime cannot expire under its own timer while this run uses
         // it (today's `clearWarmHandleTimer(cached)` after the reuse decision).
         let cached = canResume ? hostStore.borrow(prepared.sessionKey) : undefined;
+        if (cached && runtimeCloseAttempts.get(cached.runtime)?.has(cached.handle)) {
+          const error = new AcpxStagedRuntimeCleanupError([], prepared.stagedRuntime,
+            { runtime: cached.runtime, handle: cached.handle, entry: cached });
+          retainSessionCleanup(cached, error);
+          rememberPreparedCleanup(prepared, error);
+          throw error;
+        }
         if (cached && (ctx.context.refreshTools === true
           || asString(previousParams.mcpFingerprint, "") !== shortHash(prepared.mcpIdentity)
           // MCP bearer credentials are run-scoped, even for an unchanged catalog.
@@ -4414,6 +4566,18 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // The create_runtime phase runs only on a cold start.
           await emitRunPhaseTiming(ctx, "create_runtime", createRuntimeMs, "ok");
         }
+        const pendingClose = runtimeCloseAttempts.get(runtime);
+        if (pendingClose?.size) {
+          const error = new AcpxStagedRuntimeCleanupError([], prepared.stagedRuntime,
+            Object.freeze({ prepared, runtime, closeAttempts: Object.freeze([...pendingClose.entries()].map(([handle, attempt]) => Object.freeze({ handle, attempt }))) }));
+          rememberPreparedCleanup(prepared, error);
+          throw error;
+        }
+        const heldCleanup = runtimeHandshakeHolds.get(runtime) ?? runtimeCleanupHolds.get(runtime)?.values().next().value;
+        if (heldCleanup) {
+          rememberPreparedCleanup(prepared, heldCleanup);
+          throw heldCleanup;
+        }
         // Register the runtime composite in the ledger now that it exists. The
         // settlement `endSession` step closes it on every path the reuse decision
         // does not transfer. Registration here (before `ensureSession`) closes the
@@ -4457,30 +4621,42 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // the result, or a classification: log the fixed closed code only.
         // The catch stays attached so the promise stays observed and no
         // unhandled rejection can occur.
-        const closeLateHandshakeHandle = (lateHandle: AcpRuntimeHandle): void => {
-          if (isHandshakeTransportLost()) return;
-          void runtime
-            .close({
-              handle: lateHandle,
-              reason: "paperclip late handshake cleanup",
-              discardPersistentState: false,
-            })
-            .catch(() =>
-              ctx
-                .onLog(
-                  "stderr",
-                  "[paperclip] ACPX handshake late close failed: acpx_handshake_late_close_failed\n",
-                )
-                .catch(() => {}),
-            );
+        let observedLateHandle: AcpRuntimeHandle | null = null;
+        const recordLateObserverFailure = (cause: unknown): void => {
+          const error = new AcpxStagedRuntimeCleanupError([cause], prepared.stagedRuntime,
+            { prepared, runtime, lateHandle: observedLateHandle, admittedHandshake: handshakeFence.admittedPromise });
+          rememberPreparedCleanup(prepared, error);
         };
-        // The late rejection comes from inside the sandbox. It crosses the
-        // sandbox-to-host trust boundary, so it must never reach the run log,
-        // the result, or a classification: log the fixed closed code only.
-        const recordLateHandshakeRejection = (): void => {
-          void ctx
-            .onLog("stderr", "[paperclip] ACPX handshake late rejection: acpx_handshake_late_rejection\n")
-            .catch(() => {});
+        const observeLateDiagnostic = (text: string): Promise<void> => Promise.resolve()
+          .then(() => ctx.onLog("stderr", text))
+          .catch(recordLateObserverFailure)
+          .catch(() => {});
+        const closeLateHandshakeHandle = (lateHandle: AcpRuntimeHandle): void => {
+          observedLateHandle = lateHandle;
+          const arrived = new AcpxStagedRuntimeCleanupError([], prepared.stagedRuntime,
+            { prepared, runtime, lateHandle, admittedHandshake: handshakeFence.admittedPromise });
+          rememberPreparedCleanup(prepared, arrived);
+          if (isHandshakeTransportLost()) {
+            const lost = new AcpxStagedRuntimeCleanupError([new Error("Late ACP handle close was not submitted after control loss.")], prepared.stagedRuntime,
+              { prepared, runtime, lateHandle, admittedHandshake: handshakeFence.admittedPromise });
+            holdRuntimeCleanup(runtime, lateHandle, lost);
+            rememberPreparedCleanup(prepared, lost);
+            return;
+          }
+          void closeRuntimeOnce(runtime, { handle: lateHandle, reason: "paperclip late handshake cleanup", discardPersistentState: false })
+            .catch(cause => {
+              const error = new AcpxStagedRuntimeCleanupError([cause], prepared.stagedRuntime,
+                { prepared, runtime, lateHandle, admittedHandshake: handshakeFence.admittedPromise });
+              holdRuntimeCleanup(runtime, lateHandle, error);
+              rememberPreparedCleanup(prepared, error);
+              return observeLateDiagnostic("[paperclip] ACPX handshake late close failed: acpx_handshake_late_close_failed\n");
+            }).catch(recordLateObserverFailure).catch(() => {});
+        };
+        const recordLateHandshakeRejection = (cause: unknown): void => {
+          const error = new AcpxStagedRuntimeCleanupError([cause], prepared.stagedRuntime,
+            { prepared, runtime, admittedHandshake: handshakeFence.admittedPromise });
+          rememberPreparedCleanup(prepared, error);
+          void observeLateDiagnostic("[paperclip] ACPX handshake late rejection: acpx_handshake_late_rejection\n");
         };
 
         try {
@@ -4507,6 +4683,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
                   isTransportLost: isHandshakeTransportLost,
                   onLateHandleAfterSeal: closeLateHandshakeHandle,
                   onLateRejection: recordLateHandshakeRejection,
+                  onObserverFailure: recordLateObserverFailure,
                 });
                 ensureSessionMs = now() - ensureSessionStart;
                 return established;
@@ -4545,6 +4722,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
                   isTransportLost: isHandshakeTransportLost,
                   onLateHandleAfterSeal: closeLateHandshakeHandle,
                   onLateRejection: recordLateHandshakeRejection,
+                  onObserverFailure: recordLateObserverFailure,
                 });
                 retryEnsureSessionMs = now() - ensureSessionStart;
                 return established;
@@ -4599,6 +4777,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // again later.
           const guardTripped = isAcpxHandshakeTimeoutError(err) || isAcpxHandshakeTransportLostError(err);
           handshakeAbandoned = guardTripped;
+          if (guardTripped) {
+            const error = new AcpxStagedRuntimeCleanupError([err], prepared.stagedRuntime,
+              { prepared, runtime, admittedHandshake: handshakeFence.admittedPromise, fence: handshakeFence });
+            runtimeHandshakeHolds.set(runtime, error);
+            rememberPreparedCleanup(prepared, error);
+          }
           runtimeSettlement = {
             mode: "direct",
             handle: handle ?? syntheticCloseHandle(),
@@ -4675,6 +4859,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           );
         }
         sessionHandle = handle;
+        if (runtimeCloseAttempts.get(runtime)?.has(handle)) {
+          const error = new AcpxStagedRuntimeCleanupError([], prepared.stagedRuntime, { runtime, handle });
+          rememberPreparedCleanup(prepared, error);
+          throw error;
+        }
         startupFailed = false;
         await emitPhase("ensure_session", ensureSessionPhaseStart, "ok");
       } catch (err) {
@@ -4963,7 +5152,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               // can wait behind the same hung cleanup (or open a new client).
               killCapturedLocalProcess(processIdentitySink.localProcess);
             } else {
-              void runtime.close({ handle: sessionHandle, reason: "operator stop deadline", discardPersistentState: true })
+              void closeRuntimeOnce(runtime, { handle: sessionHandle, reason: "operator stop deadline", discardPersistentState: true })
                 .catch(() => {});
             }
           }, Math.max(1, asNumber(ctx.config.graceSec, 15)) * 1000);
@@ -5394,6 +5583,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // state through the shared closure locals and no-ops on an empty ledger slot.
       // The Phase 3 error policy governs every step. The coordinator alone owns the
       // startup rollback.
+      let finishStagedReuse: (() => Promise<void>) | null = null;
       const settlementSteps: SettlementSteps = {
         // Derive the reuse candidate. Only a clean turn (no cause) can save. The
         // host lane would save the live runtime, but the Amendment B credential gate
@@ -5446,6 +5636,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             await withAdapterExecutionPhase(ctx, "cancel_turn", () => activeTurn!.cancel({ reason: settlement.cancelTurnReason! }).catch(() => {}));
           }
           const existing = warmHandles.get(prepared.sessionKey);
+          const retainRuntimeCloseFailure = (cause: unknown): never => {
+            const error = new AcpxStagedRuntimeCleanupError([cause], prepared.stagedRuntime,
+              { prepared, runtime, handle: settlement.handle, existing, release: prepared.sessionStagingLeaseRelease });
+            holdRuntimeCleanup(runtime, settlement.handle, error);
+            if (existing && warmHandleMatches(existing, runtime, settlement.handle)) retainSessionCleanup(existing, error);
+            rememberPreparedCleanup(prepared, error);
+            throw error;
+          };
           // Re-read the duplex control-channel disposition here, at the
           // boundary that places the remote call. The settlement snapshot
           // above can predate a channel loss the bridge latches during the
@@ -5455,17 +5653,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // adds a later-observed loss; it never clears the snapshot's `true`.
           const remoteChannelLost =
             settlement.skipRemoteClose || (prepared.paperclipBridge?.readRunDisposition?.().failed ?? false);
-          // The control channel is already known lost, so no remote call can
-          // reach the backend. Release the local bookkeeping only and place no
-          // `runtime.close(...)` call — that call has no deadline of its own
-          // and would block on the dead channel.
+          // A lost control channel cannot acknowledge close. Retain the actual
+          // runtime/handle and local admission hold without submitting to it.
           if (remoteChannelLost) {
-            if (warmHandleMatches(existing, runtime, settlement.handle) && existing) {
-              clearWarmHandleTimer(existing);
-              warmHandles.delete(prepared.sessionKey);
-              flushChildStderr(existing.childStderrState);
-            }
-            return;
+            retainRuntimeCloseFailure(new Error("ACP runtime close could not be acknowledged after control loss."));
           }
           // The handshake guard abandoned this `ensureSession` call and no late
           // handle has arrived yet. Do not close the synthetic placeholder now:
@@ -5488,20 +5679,17 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               entry: existing,
               reason: settlement.reason,
               discardPersistentState: settlement.discardPersistentState,
+              onCloseFailure: retainRuntimeCloseFailure,
             }));
             return;
           }
-          const onCloseError = settlement.recordCloseError || ctx.signal?.aborted
-            ? (closeErr: unknown) => recordTeardownError("runtime-close", closeErr)
-            : () => {};
-          await withAdapterExecutionPhase(ctx, "close_session", () => runtime
-            .close({
-              handle: settlement.handle,
-              reason: settlement.reason,
-              discardPersistentState: settlement.discardPersistentState,
-            })
-            .then(() => { runtimeStopConfirmed = true; })
-            .catch(onCloseError));
+          await withAdapterExecutionPhase(ctx, "close_session", async () => {
+            try {
+              await closeRuntimeOnce(runtime, { handle: settlement.handle, reason: settlement.reason,
+                discardPersistentState: settlement.discardPersistentState });
+              runtimeStopConfirmed = true;
+            } catch (error) { retainRuntimeCloseFailure(error); }
+          });
           if (settlement.dropWarmEntry && warmHandleMatches(existing, runtime, settlement.handle) && existing) {
             clearWarmHandleTimer(existing);
             warmHandles.delete(prepared.sessionKey);
@@ -5511,12 +5699,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // store (which arms the idle policy); every other case discards the staged
         // runtime. The host warm save is closed in `endSession`.
         settleReuse: (slots, decision) => timedPhase("settle_reuse", async () => {
+          finishStagedReuse = async () => {
           if (!slots.has("staged_runtime")) return;
           if (decision.kind === "save" && decision.savedId === "staged_runtime") {
             saveStagedRuntimeAfterCleanTurn({ handles: stagedRuntimes, prepared, now: now() });
             return;
           }
           await discardStagedRuntime({ handles: stagedRuntimes, prepared });
+          };
         }),
         // Stop both bridges in one allSettled.
         stopTransport: () => timedPhase("stop_transport", async () => {
@@ -5530,23 +5720,40 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         syncBack: () => timedPhase("sync_back", async () => {
           // A transport error or terminal narrative cannot authorize collecting
           // mutable provider files. Require the owned close or local OS handle.
+          if (cleanupUnknown(prepared)) return;
           const stopped = runtimeStopConfirmed || (!prepared.processSessionBridge && capturedProcessExited(processIdentitySink?.localProcess));
           try {
             if (stopped) await withAdapterExecutionPhase(ctx, "instruction_collection", () => ctx.onProviderStopped?.());
-          } catch {
-            // Match ACP's fail-soft teardown policy without describing this as
-            // a workspace restore failure or exposing paths from a raw error.
-            await recordTeardownError("instruction-collection", new Error("Instruction collection failed after provider stop. No instruction save is claimed."));
+          } catch (cause) {
+            const error = new AcpxStagedRuntimeCleanupError([cause], prepared.stagedRuntime,
+              { collector: ctx.onProviderStopped, runtime, handle: sessionHandle, release: prepared.sessionStagingLeaseRelease });
+            holdRuntimeCleanup(runtime, sessionHandle, error);
+            rememberPreparedCleanup(prepared, error);
+            throw error;
           } finally {
+            if (!cleanupUnknown(prepared)) {
             await withAdapterExecutionPhase(ctx, "workspace_restore", () => runRuntimeSpan("sandbox.syncBack", async () => {
               const restoreOutcome = await syncBackManagedHome(prepared);
               if (!restoreOutcome.ok) {
+                const error = new AcpxStagedRuntimeCleanupError([restoreOutcome], prepared.stagedRuntime,
+                  { release: prepared.sessionStagingLeaseRelease });
+                rememberPreparedCleanup(prepared, error);
                 workspaceRestoreFailureField = {
                   workspaceRestoreFailure: restoreOutcome.code,
                   ...(restoreOutcome.diagnostic ? { workspaceRestoreDiagnostic: restoreOutcome.diagnostic } : {}),
                 };
               }
+              if (!cleanupUnknown(prepared)) {
+                try { await finishStagedReuse?.(); }
+                catch (failure) {
+                  const error = new AcpxStagedRuntimeCleanupError([failure], prepared.stagedRuntime,
+                    { release: prepared.sessionStagingLeaseRelease });
+                  rememberPreparedCleanup(prepared, error);
+                  throw error;
+                }
+              }
             }));
+            }
           }
         }),
         // The staging lease releases as the run's final act, AFTER the coordinator
@@ -5606,7 +5813,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           if (ctx.signal?.aborted && providerExited && (runtimeStopConfirmed || forcedStop)) {
             capturedResult = {
               ...capturedResult,
-              ...(safeInterruptedSession && !forcedStop && !("workspaceRestoreFailure" in workspaceRestoreFailureField)
+              ...(safeInterruptedSession && !forcedStop && !cleanupUnknown(prepared) && !("workspaceRestoreFailure" in workspaceRestoreFailureField)
                 ? { executionRecovery: { kind: "interrupted", providerStopped: true, sessionPreserved: true, actionOutcomes: "settled" },
                     sessionParams: { ...capturedResult.sessionParams, interruptedCheckpoint: true } }
                 : {}),
@@ -5628,6 +5835,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // (settlement precedes reproduction), so a failed workspace restore is
           // already recorded by the time we get here. Merge it into `resultJson`
           // only on a failure — a clean restore adds no new key.
+          if (cleanupUnknown(prepared)) {
+            capturedResult = { ...capturedResult, resultJson: { ...capturedResult.resultJson, acpxCleanupPending: true } };
+          }
           if (!("workspaceRestoreFailure" in workspaceRestoreFailureField)) {
             return capturedResult;
           }
@@ -5658,7 +5868,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // bridges and ran the sync-back before this point, so the ordering is
       // bridge-stop → sync-back → lease release.
       const leaseRelease = releaseStagingLease as (() => void) | null;
-      if (leaseRelease) {
+      if (leaseRelease && !stagingLeaseIsRetained(leaseRelease)) {
         const leaseStart = now();
         leaseRelease();
         // Fire-and-forget the phase timing: the release is the run's final act, so

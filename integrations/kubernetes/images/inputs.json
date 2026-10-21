@@ -1,0 +1,26 @@
+{
+  "sourceRevision": "252d9b5077f4eee98ec48225641ef1a02d824158",
+  "nodeBase": "node:24.15.0-trixie-slim@sha256:291be77873bc04731968cacf82f0fcef17cee8cf200c6b6951e2bcab41560eb7",
+  "debianSnapshot": "20261001T000000Z",
+  "pnpm": "9.15.4",
+  "providers": {
+    "claude": {
+      "package": "@anthropic-ai/claude-code",
+      "version": "2.1.296"
+    },
+    "codex": {
+      "package": "@openai/codex",
+      "version": "0.162.1"
+    },
+    "gemini": {
+      "package": "@google/gemini-cli",
+      "version": "0.63.0"
+    }
+  },
+  "typescript": "5.9.3",
+  "buildStatus": "All four images built locally on amd64; all three runner SSH/SFTP/reverse callback/replacement fixtures pass. Registry digests and actual adapter integration pending.",
+  "architecture": "Cluster verified amd64; all three CLI binaries run on amd64; arm64 not tested",
+  "controllerLockSha256": "f4158d881915c767040519545a6538391d59282ac6bf5b15c3e784767ce220de",
+  "controllerLockNote": "Upstream frozen lock failed: missing OpenTelemetry context/trace 2.10.0 dependencies. Resolved once with pinned pnpm; included override adds 52 lines. Image installs remain frozen.",
+  "controllerScope": "SSH CLI engines for Codex/Claude/Gemini. Optional OpenCode/ACPX provider pack omitted to avoid a second non-frozen dependency resolution."
+}

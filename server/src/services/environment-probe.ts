@@ -1,3 +1,5 @@
+import { withCapacityOperation } from "./execution-capacity-lifetime.js";
+import { currentCapacityOperation, executionCapacity, guardCapacityExecution } from "./execution-capacity-context.js";
 import type { Environment, EnvironmentProbeResult } from "@paperclipai/shared";
 import type { Db } from "@paperclipai/db";
 import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
@@ -71,6 +73,12 @@ export async function probeEnvironment(
     acquireSandboxRuntimeLease?: boolean;
   } = {},
 ): Promise<EnvironmentProbeResult> {
+  if (executionCapacity(db) && !currentCapacityOperation(db)) {
+    if (!options.companyId) throw new Error("capacity_probe_company_required");
+    return withCapacityOperation(db, { companyId: options.companyId, environmentId: environment.id,
+      kind: "probe", key: `environment:${environment.id}` }, () => probeEnvironment(db, environment, options));
+  }
+  await guardCapacityExecution(db, { companyId: options.companyId ?? "", environmentId: environment.id });
   const resolvedCompanyId = options.companyId ?? null;
   const savedSandboxProbe = environment.driver === "sandbox" && options.acquireSandboxRuntimeLease === true && resolvedCompanyId;
   const environments = environmentService(db);

@@ -210,6 +210,69 @@ describe("Discord native command Gateway boundary", () => {
     return { runtime, rows, adapter, post, patch, command, fetch };
   }
 
+  it.each(["initial acknowledgement", "application callback", "final edit"])(
+    "joins the admitted native command during %s before SDK shutdown and refuses retired input",
+    async (phase) => {
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      const callback = vi.fn(async () => {
+        if (phase === "application callback") await held;
+        return { kind: "accepted" as const, content: "Recorded." };
+      });
+      const f = await setup(callback);
+      if (phase === "initial acknowledgement") {
+        f.post.mockImplementationOnce(async () => { await held; return undefined; });
+      }
+      if (phase === "final edit") {
+        f.patch.mockImplementationOnce(async () => {
+          await held;
+          return {
+            id: "999999999999999999", channel_id: threadId, content: "Recorded.",
+            author: { id: applicationId, username: "maya", discriminator: "0", avatar: null, bot: true },
+            timestamp: "2026-09-09T00:00:00.000Z", type: 0, attachments: [], embeds: [],
+          };
+        });
+      }
+      const sdk = (f.runtime as unknown as { chat: { shutdown(): Promise<void> } }).chat;
+      const sdkShutdown = vi.spyOn(sdk, "shutdown");
+      const admitted = f.adapter.handleGatewayInteraction(f.command());
+      let shutdownDone = false;
+      let closing: Promise<void> | undefined;
+      try {
+        await vi.waitFor(() => {
+          if (phase === "initial acknowledgement") expect(f.post).toHaveBeenCalledOnce();
+          else if (phase === "application callback") expect(callback).toHaveBeenCalledOnce();
+          else expect(f.patch).toHaveBeenCalledOnce();
+        });
+        closing = f.runtime.shutdown().then(() => { shutdownDone = true; });
+        // The runtime retirement fence is synchronous. A fresh interaction
+        // cannot acknowledge, enter service admission or send a private reply.
+        const counts = [f.post.mock.calls.length, callback.mock.calls.length, f.patch.mock.calls.length];
+        await f.adapter.handleGatewayInteraction(f.command());
+        expect([f.post.mock.calls.length, callback.mock.calls.length, f.patch.mock.calls.length]).toEqual(counts);
+        // Drain the event-loop turn so an unjoined shutdown can reach the real
+        // SDK shutdown; a couple of microtasks would be a weak timing oracle.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(shutdownDone).toBe(false);
+        expect(sdkShutdown).not.toHaveBeenCalled();
+      } finally {
+        release();
+        await admitted;
+        await closing;
+      }
+      expect(shutdownDone).toBe(true);
+      expect(sdkShutdown).toHaveBeenCalledOnce();
+      expect(f.post).toHaveBeenCalledOnce();
+      expect(callback).toHaveBeenCalledOnce();
+      expect(f.patch).toHaveBeenCalledOnce();
+      await f.adapter.handleGatewayInteraction(f.command());
+      expect(f.post).toHaveBeenCalledOnce();
+      expect(callback).toHaveBeenCalledOnce();
+      expect(f.patch).toHaveBeenCalledOnce();
+      expect(f.fetch).not.toHaveBeenCalled();
+    },
+  );
+
   it("awaits closed admission after an immediate private defer and retains exact no-argument command identity without token", async () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
@@ -289,6 +352,10 @@ describe("Discord native command Gateway boundary", () => {
     expect(JSON.stringify(f.patch.mock.calls)).not.toContain(
       "sensitive-bootstrap-error",
     );
+    await expect(f.runtime.shutdown()).rejects.toThrow("sensitive-bootstrap-error");
+    // This owner intentionally remains retired with an uncertain callback result.
+    // The asserted failure is not a successful teardown for afterEach to retry.
+    runtimes.splice(runtimes.indexOf(f.runtime), 1);
   });
 
   it("keeps a publication inside command handling on the ordinary bot route", async () => {

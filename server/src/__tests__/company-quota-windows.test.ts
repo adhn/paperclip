@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 const mocks = vi.hoisted(() => ({
   accounts: vi.fn(),
   credential: vi.fn(),
+  runtimeCredential: vi.fn(),
   refresh: vi.fn(),
   codex: vi.fn(),
   claude: vi.fn(),
@@ -12,6 +13,7 @@ vi.mock("../services/ai-connections.js", () => ({
   aiConnectionService: () => ({
     quotaAccounts: mocks.accounts,
     credential: mocks.credential,
+    runtimeCredential: mocks.runtimeCredential,
     refreshQuotaCredential: mocks.refresh,
   }),
 }));
@@ -47,11 +49,12 @@ const db = {
   }),
 } as unknown as Db;
 const account = (id: string, provider = "openai", status = "connected") => ({
-  connection: { id, updatedAt: new Date(0) },
+  connection: { id, companyId: "fixture-company", status: "active", enabled: true, healthStatus: "ok", config: { ai: { provider, method: "subscription" } }, updatedAt: new Date(0) },
   grant: {
     id,
     updatedAt: new Date(0),
-    credentialSecretRefs: [{ secretId: "secret" }],
+    companyId: "fixture-company", connectionId: id, status: "active", kind: "user", subjectUserId: "fixture-user",
+    credentialSecretRefs: [{ secretId: "secret", configPath: "ai.credential", versionSelector: "latest" }],
   },
   summary: { provider, name: id, status },
 });
@@ -60,7 +63,7 @@ describe("connected account quotas", () => {
     vi.clearAllMocks();
     revision = 1;
     mocks.refresh.mockRejectedValue(new Error("authentication_required"));
-    mocks.credential.mockResolvedValue(
+    mocks.runtimeCredential.mockResolvedValue(
       JSON.stringify({
         tokens: { access_token: "private-token", account_id: "actual-account" },
       }),
@@ -69,11 +72,64 @@ describe("connected account quotas", () => {
       { label: "5h", usedPercent: 0.5, resetsAt: null, valueLabel: null },
     ]);
   });
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    for (const call of mocks.runtimeCredential.mock.calls) expect(call[1]).toMatchObject({ kind: "user", userId: expect.any(String) });
+    for (const call of mocks.refresh.mock.calls) expect(call[3]).toMatchObject({ kind: "user", userId: expect.any(String) });
+    vi.useRealTimers();
+  });
+  it.each(["intent", "result"])("refuses provider dispatch when recovery-aware acquisition holds a pending exchange %s", async (kind) => {
+    mocks.accounts.mockResolvedValue([account(`pending-exchange-${kind}`)]);
+    // A raw stored-value read would still hand out the predecessor. This
+    // external-use path must ask the recovery-aware authority instead.
+    mocks.credential.mockResolvedValue(JSON.stringify({ accessToken: "consumed-predecessor" }));
+    mocks.runtimeCredential.mockRejectedValueOnce(new Error(`quota exchange ${kind} requires inspection`));
+    const [result] = await fetchCompanyQuotaWindows(db, `pending-company-${kind}`, "pending-user");
+    expect(result).toMatchObject({ ok: false, errorFamily: "provider_unavailable", windows: [] });
+    expect(mocks.runtimeCredential).toHaveBeenCalledOnce();
+    expect(mocks.credential).not.toHaveBeenCalled();
+    expect(mocks.codex).not.toHaveBeenCalled();
+    expect(mocks.claude).not.toHaveBeenCalled();
+    expect(mocks.refresh).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain("consumed-predecessor");
+  });
+
+  it("rechecks recovery authority after refresh before sending another provider read", async () => {
+    mocks.accounts.mockResolvedValue([account("post-refresh-pending")]);
+    mocks.runtimeCredential.mockResolvedValueOnce(JSON.stringify({ accessToken: "expired-predecessor" }))
+      .mockRejectedValueOnce(new Error("quota exchange result requires inspection"));
+    mocks.codex.mockRejectedValueOnce(new Error("401"));
+    mocks.refresh.mockResolvedValueOnce(JSON.stringify({ accessToken: "replacement" }));
+    const [result] = await fetchCompanyQuotaWindows(db, "post-refresh-pending-company", "pending-user");
+    expect(result).toMatchObject({ ok: false, errorFamily: "provider_unavailable", windows: [] });
+    expect(mocks.runtimeCredential).toHaveBeenCalledTimes(2);
+    expect(mocks.credential).not.toHaveBeenCalled();
+    expect(mocks.codex).toHaveBeenCalledOnce();
+    expect(mocks.refresh).toHaveBeenCalledOnce();
+  });
+
+  it("defers when initial recovery commits a new revision and uses its new cache identity on the next poll", async () => {
+    mocks.accounts.mockResolvedValue([account("initial-recovery-revision")]);
+    const recovered = JSON.stringify({ accessToken: "recovered-token", accountId: "same-account" });
+    mocks.runtimeCredential.mockImplementationOnce(async () => { revision++; return recovered; })
+      .mockResolvedValue(recovered);
+    const [deferred] = await fetchCompanyQuotaWindows(db, "initial-recovery-company", "recovery-user");
+    expect(deferred).toMatchObject({ ok: false, errorFamily: "provider_unavailable", windows: [] });
+    expect(mocks.codex).not.toHaveBeenCalled();
+    expect(mocks.refresh).not.toHaveBeenCalled();
+    const [current] = await fetchCompanyQuotaWindows(db, "initial-recovery-company", "recovery-user");
+    expect(current.ok).toBe(true);
+    expect(current.accountKey).not.toBe(deferred.accountKey);
+    expect(mocks.runtimeCredential).toHaveBeenCalledTimes(2);
+    expect(mocks.credential).not.toHaveBeenCalled();
+    expect(mocks.codex).toHaveBeenCalledOnce();
+    expect(mocks.codex).toHaveBeenCalledWith("recovered-token", "same-account", expect.any(AbortSignal));
+  });
+
   it("uses the selected account without invoking a local CLI or fallback login", async () => {
     mocks.accounts.mockResolvedValue([account("remote-codex")]);
     const result = await fetchCompanyQuotaWindows(db, "company-1", "user-1");
     expect(mocks.accounts).toHaveBeenCalledWith("company-1", "user-1");
+    expect(mocks.runtimeCredential).toHaveBeenCalledWith(expect.any(Object), { kind: "user", userId: "user-1" });
     expect(mocks.codex).toHaveBeenCalledWith("private-token", "actual-account", expect.any(AbortSignal));
     expect(mocks.adapters).not.toHaveBeenCalled();
     expect(result[0]).toMatchObject({
@@ -117,7 +173,7 @@ describe("connected account quotas", () => {
     mocks.accounts.mockResolvedValue([account("revoked", "openai", "revoked")]);
     const [result] = await fetchCompanyQuotaWindows(db, "company-5", "user-5");
     expect(result.errorFamily).toBe("credentials_unavailable");
-    expect(mocks.credential).not.toHaveBeenCalled();
+    expect(mocks.runtimeCredential).not.toHaveBeenCalled();
     mocks.accounts.mockResolvedValue([]);
     const empty = await fetchCompanyQuotaWindows(db, "company-5", "user-5");
     expect(
@@ -127,7 +183,7 @@ describe("connected account quotas", () => {
   });
   it("uses a managed Claude OAuth credential and keeps failed reads private", async () => {
     mocks.accounts.mockResolvedValue([account("claude-account", "anthropic")]);
-    mocks.credential.mockResolvedValue("claude-private-oauth");
+    mocks.runtimeCredential.mockResolvedValue("claude-private-oauth");
     mocks.claude.mockResolvedValue([
       { label: "Weekly", usedPercent: 12, resetsAt: null, valueLabel: null },
     ]);
@@ -135,7 +191,7 @@ describe("connected account quotas", () => {
     expect(result.ok).toBe(true);
     expect(mocks.claude).toHaveBeenCalledWith("claude-private-oauth", expect.any(AbortSignal));
     mocks.accounts.mockResolvedValue([account("secret-failure")]);
-    mocks.credential.mockRejectedValue(
+    mocks.runtimeCredential.mockRejectedValue(
       new Error("private credential store failure"),
     );
     const [failed] = await fetchCompanyQuotaWindows(db, "company-6", "user-6");
@@ -144,7 +200,7 @@ describe("connected account quotas", () => {
   });
   it("reads quota for a verified login without an optional account ID", async () => {
     mocks.accounts.mockResolvedValue([account("missing-identity")]);
-    mocks.credential.mockResolvedValue(
+    mocks.runtimeCredential.mockResolvedValue(
       JSON.stringify({ accessToken: "private" }),
     );
     const [result] = await fetchCompanyQuotaWindows(db, "company-7", "user-7");
@@ -164,12 +220,13 @@ describe("connected account quotas", () => {
     mocks.refresh.mockImplementationOnce(async () => {
       const value = JSON.stringify({ tokens: { access_token: "new-token", account_id: "same-account" } });
       revision++;
-      mocks.credential.mockResolvedValue(value);
+      mocks.runtimeCredential.mockResolvedValue(value);
       return value;
     });
     const [result] = await fetchCompanyQuotaWindows(db, "refresh-company", "user");
     expect(result.ok).toBe(true);
     expect(mocks.refresh).toHaveBeenCalledTimes(1);
+    expect(mocks.refresh).toHaveBeenCalledWith(expect.any(Object), expect.any(String), expect.any(AbortSignal), { kind: "user", userId: "user" });
     expect(mocks.codex).toHaveBeenLastCalledWith("new-token", "same-account", expect.any(AbortSignal));
     expect(JSON.stringify(result)).not.toContain("new-token");
     const again = await fetchCompanyQuotaWindows(db, "refresh-company", "user");
@@ -181,7 +238,7 @@ describe("connected account quotas", () => {
     mocks.accounts.mockResolvedValue([account("rotating-during-refresh")]);
     mocks.codex.mockRejectedValueOnce(new Error("401"));
     mocks.refresh.mockResolvedValue(JSON.stringify({ accessToken: "refreshed" }));
-    mocks.credential.mockResolvedValueOnce(JSON.stringify({ accessToken: "expired" })).mockImplementationOnce(async () => {
+    mocks.runtimeCredential.mockResolvedValueOnce(JSON.stringify({ accessToken: "expired" })).mockImplementationOnce(async () => {
       revision++;
       return JSON.stringify({ accessToken: "changed-again" });
     });
@@ -194,7 +251,7 @@ describe("connected account quotas", () => {
     vi.useFakeTimers();
     mocks.accounts.mockResolvedValue([account("stalled")]);
     let finish!: (value: string) => void;
-    mocks.credential.mockReturnValue(new Promise<string>(resolve => { finish = resolve; }));
+    mocks.runtimeCredential.mockReturnValue(new Promise<string>(resolve => { finish = resolve; }));
     const pending = fetchCompanyQuotaWindows(db, "company-8", "user-8");
     await vi.advanceTimersByTimeAsync(20_001);
     const [result] = await pending;
@@ -236,7 +293,7 @@ describe("connected account quotas", () => {
     vi.useFakeTimers();
     mocks.accounts.mockResolvedValue([account("late-credential")]);
     let resolveCredential!: (value: string) => void;
-    mocks.credential.mockReturnValue(new Promise<string>((resolve) => { resolveCredential = resolve; }));
+    mocks.runtimeCredential.mockReturnValue(new Promise<string>((resolve) => { resolveCredential = resolve; }));
     const pending = fetchCompanyQuotaWindows(db, "late-company", "late-user");
     await vi.advanceTimersByTimeAsync(20_001);
     expect((await pending)[0].ok).toBe(false);
@@ -263,7 +320,7 @@ describe("connected account quotas", () => {
     mocks.accounts.mockResolvedValue(
       Array.from({ length: 9 }, (_, i) => account(`parallel-${i}`)),
     );
-    mocks.credential.mockResolvedValue(
+    mocks.runtimeCredential.mockResolvedValue(
       JSON.stringify({ accessToken: "private", accountId: "actual" }),
     );
     let active = 0,
@@ -281,4 +338,13 @@ describe("connected account quotas", () => {
       Array.from({ length: 9 }, (_, i) => `parallel-${i}`),
     );
   });
+  it("refuses a newly denied caller acquisition before any provider read", async () => {
+    mocks.accounts.mockResolvedValue([account("denied-current-context")]);
+    mocks.runtimeCredential.mockRejectedValueOnce(Object.assign(new Error("current audience denied"), { status: 403 }));
+    const [result] = await fetchCompanyQuotaWindows(db, "denied-context-company", "denied-context-user");
+    expect(result.ok).toBe(false);
+    expect(mocks.runtimeCredential).toHaveBeenCalledWith(expect.any(Object), { kind: "user", userId: "denied-context-user" });
+    expect(mocks.codex).not.toHaveBeenCalled(); expect(mocks.claude).not.toHaveBeenCalled(); expect(mocks.refresh).not.toHaveBeenCalled();
+  });
+
 });

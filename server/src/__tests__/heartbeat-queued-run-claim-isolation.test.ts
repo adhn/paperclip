@@ -1,3 +1,7 @@
+import { trustedCapacityPolicy, capacityFingerprint, capacityAgentContract, capacityEnvironmentContract } from "../services/execution-capacity-policy.js";
+import { environments } from "@paperclipai/db";
+import { executionAdmissionService } from "../services/execution-admission.js";
+import { admissionAttempts, admissionEpochs, admissionScheduler, admissionScopes } from "@paperclipai/db";
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -63,6 +67,8 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
     mockAdapterExecute.mockClear();
     runningProcesses.clear();
     // Executed runs write to many company-scoped tables; clear them all.
+    await db.execute(sql`truncate execution_protected_authority_requests, execution_protected_command_journals, execution_protected_authority_pins, execution_admission_legacy_decisions, execution_admission_bootstraps, execution_admission_legacy_holds, execution_admission_restorations, execution_admission_commands, execution_admission_runner_epochs, execution_admission_attempts, execution_admission_projects,
+      execution_admission_scopes, execution_admission_scheduler, execution_admission_epochs`);
     await db.execute(sql`truncate table ${companies} cascade`);
   });
 
@@ -242,4 +248,107 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
     expect(await runStatus(rejectedRunId)).toMatchObject({ status: "cancelled" });
     expect(await runStatus(healthyRunId)).toMatchObject({ status: "succeeded" });
   });
+  async function withAdmission(capacity: number) {
+    const { companyId, agentId } = await insertAgent();
+    const { runId } = await insertClaimableRun(companyId, agentId);
+    const epoch = randomUUID();
+    await db.insert(admissionEpochs).values({ epoch });
+    await db.insert(admissionScheduler).values({ epoch, pendingLimit: 20, draining: false,
+      evaluationExemptionUntil: new Date(Date.now() + 60_000) });
+    await db.insert(admissionScopes).values({ key: "runner:assembled-test", capacity });
+    const service = executionAdmissionService(db, epoch);
+    const attempt = await service.registerRun({ companyId, runId, scopes: ["runner:assembled-test"] });
+    heartbeat = heartbeatService(db, { executionAdmission: service });
+    return { companyId, agentId, runId, attempt };
+  }
+  it("assembled scheduler reserves before adapter execution and retains capacity after terminal completion", async () => {
+    const f = await withAdmission(1);
+    let dispatchedReservation: string | undefined;
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      const [attempt] = await db.select().from(admissionAttempts).where(sql`${admissionAttempts.id} = ${f.attempt.id}`);
+      dispatchedReservation = attempt.state;
+      return { exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+        summary: "Admission claim test", provider: "test", model: "test-model" };
+    });
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    expect(mockAdapterExecute).toHaveBeenCalledOnce();
+    expect(dispatchedReservation).toBe("reserved");
+    expect((await runStatus(f.runId))?.status).toBe("succeeded");
+    const [held] = await db.select().from(admissionAttempts).where(sql`${admissionAttempts.id} = ${f.attempt.id}`);
+    expect(held).toMatchObject({ state: "reserved", grantOrder: 1n });
+  });
+  it("assembled recovery leaves excess demand queued without executing an adapter", async () => {
+    const f = await withAdmission(0);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    expect((await runStatus(f.runId))?.status).toBe("queued");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    const [waiting] = await db.select().from(admissionAttempts).where(sql`${admissionAttempts.id} = ${f.attempt.id}`);
+    expect(waiting).toMatchObject({ state: "queued", waitReason: "capacity:runner:assembled-test", token: null });
+  });
+
+  it("assembled scheduler automatically registers trusted scopes and visibly queues at zero runner capacity", async () => {
+    const { companyId, agentId } = await insertAgent();
+    const { runId } = await insertClaimableRun(companyId, agentId);
+    const [environment] = await db.insert(environments).values({ name: randomUUID(), driver: "ssh", config: { host: "never-contacted" } }).returning();
+    const [agent] = await db.update(agents).set({ defaultEnvironmentId: environment.id, adapterConfig: { engine: "cli" } }).where(sql`${agents.id} = ${agentId}`).returning();
+    const epoch = randomUUID();
+    await db.insert(admissionEpochs).values({ epoch });
+    await db.insert(admissionScheduler).values({ epoch, pendingLimit: 20, draining: false,
+      evaluationExemptionUntil: new Date(Date.now() + 60_000) });
+    const trustedDb = createDb(tempDb!.connectionString);
+    try {
+      executionAdmissionService(trustedDb, epoch, trustedCapacityPolicy([{
+        companyId, agentId, environmentId: environment.id, adapterType: agent.adapterType,
+        instance: "assembled", instanceCapacity: 1, runner: "assembled", runnerCapacity: 0,
+        providerAccount: "assembled", accountCapacity: 1, workspace: "assembled", session: "assembled", credential: "assembled",
+        agentFingerprint: capacityFingerprint(capacityAgentContract(agent)),
+        environmentFingerprint: capacityFingerprint(capacityEnvironmentContract(environment)),
+        workspaceConfigurations: [capacityFingerprint({})],
+      }]));
+      heartbeat = heartbeatService(trustedDb);
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      const [attempt] = await db.select().from(admissionAttempts).where(sql`${admissionAttempts.runId} = ${runId}`);
+      expect(attempt.scopes).toHaveLength(7);
+      expect(attempt.state).toBe("queued");
+      const [run] = await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.id} = ${runId}`);
+      expect(run.status).toBe("queued");
+      expect(run.resultJson).toMatchObject({ executionCapacity: { state: "waiting", reason: expect.stringMatching(/^capacity:runner:/) } });
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+      await trustedDb.$client.end();
+      heartbeat = heartbeatService(db);
+    }
+  });
+
+  it.each(["permanent", "retained"])("globally preflights companies past an older %s rejection", async rejection => {
+    const a = await insertAgent(), b = await insertAgent();
+    const rejected = rejection === "permanent"
+      ? await insertUnverifiableInterruptRun(a.companyId, a.agentId)
+      : await insertUnresolvableOwnerRun(a.companyId, a.agentId);
+    const healthy = await insertClaimableRun(b.companyId, b.agentId);
+    const epoch = randomUUID();
+    await db.insert(admissionEpochs).values({ epoch });
+    await db.insert(admissionScheduler).values({ epoch, pendingLimit: 20, draining: false,
+      evaluationExemptionUntil: new Date(Date.now() + 60_000) });
+    await db.insert(admissionScopes).values({ key: "runner:fair", capacity: 1 });
+    const service = executionAdmissionService(db, epoch);
+    await service.registerRun({ companyId: a.companyId, runId: rejected.runId, scopes: ["runner:fair"] });
+    await service.registerRun({ companyId: b.companyId, runId: healthy.runId, scopes: ["runner:fair"] });
+    heartbeat = heartbeatService(db, { executionAdmission: service });
+    // Enter through B's real scheduler path; the older A was accepted earlier
+    // but cannot resolve its queued-message authority. No fake claim or grant.
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    expect((await runStatus(rejected.runId))?.status).toBe(rejection === "permanent" ? "cancelled" : "queued");
+    expect((await runStatus(healthy.runId))?.status).toBe("succeeded");
+    expect(mockAdapterExecute).toHaveBeenCalledOnce();
+    const reservations = await db.select().from(admissionAttempts);
+    expect(reservations.find(r => r.runId === rejected.runId)).toMatchObject({ state: rejection === "permanent" ? "cancelled" : "queued", token: null });
+    expect(reservations.find(r => r.runId === healthy.runId)).toMatchObject({ state: "reserved", grantOrder: 1n });
+  });
+
 });

@@ -1,3 +1,4 @@
+import { bootstrapHeldExecutionAdmission, loadProductionAdmissionPolicy, requireAdmissionMigrations } from "./services/execution-admission-bootstrap.js";
 import { subscribeAllCompanyLiveEvents } from "./services/live-events.js";
 import { DELIVERY_QUEUES } from "./services/delivery-work-notifications.js";
 import type { createDeliveryWorkCoordinator } from "./services/delivery-work-coordinator.js";
@@ -221,8 +222,12 @@ async function startServerWithDatabaseTeardown(
   // Error monitoring must be ready before the first request can fail — see
   // sentry.ts.
   await sentryReady;
-  ensureDecisionSigningSecret();
   let config = loadConfig();
+  // Candidate production entry point: no opt-out or missing-service fallback.
+  // Migrations are a separate reviewed maintenance operation.
+  const admissionPolicy = await loadProductionAdmissionPolicy({ databaseUrl: config.databaseUrl,
+    autoApply: process.env.PAPERCLIP_MIGRATION_AUTO_APPLY, policyPath: process.env.PAPERCLIP_ADMISSION_POLICY_FILE });
+  ensureDecisionSigningSecret();
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
     process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
@@ -272,6 +277,12 @@ async function startServerWithDatabaseTeardown(
     label: string,
     opts?: EnsureMigrationsOptions,
   ): Promise<MigrationSummary> {
+    // No journal repair, fresh-database apply, non-TTY auto-approval or prompt
+    // may run in this mandatory-admission production entry point.
+    if (process.env.PAPERCLIP_MIGRATION_AUTO_APPLY === "false") {
+      await requireAdmissionMigrations(connectionString);
+      return "already applied";
+    }
     const autoApply = opts?.autoApply === true;
     let state = await inspectMigrations(connectionString);
     if (state.status === "needsMigrations" && state.reason === "pending-migrations") {
@@ -653,6 +664,9 @@ async function startServerWithDatabaseTeardown(
     await Promise.all(clients.map((client) => endDatabaseClient(client, 5)));
   };
   startupDatabase.close = closeDatabaseClients;
+  const admissionBootstrap = await bootstrapHeldExecutionAdmission(db as any, admissionPolicy);
+  logger.info({ mode: admissionBootstrap.mode, epoch: admissionBootstrap.epoch,
+    policyHash: admissionBootstrap.policyHash, legacyHolds: admissionBootstrap.legacyHolds }, "Execution admission held");
   
   // A claimed warm-pool stack may restart while its provider environment still
   // names the pool host. Restore the signed, durable identity before Better

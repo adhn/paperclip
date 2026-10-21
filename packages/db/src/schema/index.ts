@@ -251,3 +251,6 @@ export { executionWorkspaceRepositories } from "./execution_workspace_repositori
 export { executionWorkspaceRepositoryRoots } from "./execution_workspace_repository_roots.js";
 export { executionWorkspaceRepositoryAccess } from "./execution_workspace_repository_access.js";
 export * from "./fast_responses.js";
+export * from "./execution_admission.js";
+
+export { protectedAuthorityPins, protectedAuthorityRequests, protectedCommandJournals } from "./execution_admission.js";

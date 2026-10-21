@@ -1,0 +1,48 @@
+name: Paperclip verify-only custody cryptography
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [paperclip-concurrency-admission]
+    paths:
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/production/custody_service.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/test_custody_service.py
+      - clusters/homelab/infrastructure/paperclip-evaluation/protected-execution/custody-test-requirements.txt
+      - .github/workflows/paperclip-custody-crypto.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paperclip-custody-crypto
+  cancel-in-progress: true
+
+jobs:
+  custody-crypto-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      PACKAGE: clusters/homelab/infrastructure/paperclip-evaluation/protected-execution
+      PYTHON_IMAGE: docker.io/library/python@sha256:8dca233de9f3d9bb410665f00a4da6dd06f331083137e0e98ccf227236fcc438
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Fetch hash-pinned test-only wheels
+        run: |
+          mkdir -p "$RUNNER_TEMP/custody-wheels"
+          docker run --rm --memory 256m --memory-swap 512m --cpus 1 --pids-limit 64 \
+            --mount "type=bind,source=$PWD/$PACKAGE,target=/app,readonly" \
+            --mount "type=bind,source=$RUNNER_TEMP/custody-wheels,target=/wheels" \
+            --entrypoint python3 "$PYTHON_IMAGE" -m pip download --disable-pip-version-check \
+            --no-cache-dir --only-binary=:all: --require-hashes -r /app/custody-test-requirements.txt -d /wheels
+      - name: Verify real signatures offline without production keys
+        run: |
+          docker run --rm --init --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --user 2000:2000 --memory 256m --memory-swap 512m --cpus 1 --pids-limit 64 \
+            --tmpfs /tmp:rw,exec,nosuid,uid=2000,gid=2000,mode=700,size=64m \
+            --mount "type=bind,source=$PWD/$PACKAGE,target=/app,readonly" \
+            --mount "type=bind,source=$RUNNER_TEMP/custody-wheels,target=/wheels,readonly" --workdir /app \
+            -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONPATH=/tmp/deps --entrypoint sh "$PYTHON_IMAGE" -c '
+              python3 -m pip install --disable-pip-version-check --no-cache-dir --no-compile --no-index --find-links=/wheels --require-hashes --target=/tmp/deps -r custody-test-requirements.txt &&
+              python3 -m unittest -v test_custody_service'

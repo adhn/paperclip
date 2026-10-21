@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -88,21 +88,57 @@ async function buildSeedSnapshotKey(files: SeedFile[]): Promise<string> {
   return hash.digest("hex").slice(0, 16);
 }
 
+async function normalizePrivateDirectory(directory: string): Promise<void> {
+  const info = await fs.lstat(directory);
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    throw new Error("Managed Claude config directory must be a regular directory");
+  }
+  await fs.chmod(directory, 0o700);
+}
+
+async function normalizePrivateFile(file: string): Promise<void> {
+  const info = await fs.lstat(file);
+  if (!info.isFile() || info.isSymbolicLink()) {
+    throw new Error("Managed Claude config file must be a regular file");
+  }
+  await fs.chmod(file, 0o600);
+}
+
+async function validateSeedSnapshot(directory: string, files: SeedFile[]): Promise<void> {
+  await normalizePrivateDirectory(directory);
+  const expected = files.map((file) => file.name).sort();
+  const actual = (await fs.readdir(directory)).sort();
+  if (actual.length !== expected.length || actual.some((name, index) => name !== expected[index])) {
+    throw new Error("Managed Claude config snapshot entries do not match the selected seed");
+  }
+  for (const file of files) {
+    const target = path.join(directory, file.name);
+    await normalizePrivateFile(target);
+    if (!(await fs.readFile(target)).equals(file.contents)) {
+      throw new Error("Managed Claude config snapshot contents do not match the selected seed");
+    }
+  }
+}
+
 async function materializeSeedSnapshot(input: {
   rootDir: string;
   snapshotKey: string;
   files: SeedFile[];
 }): Promise<string> {
   const targetDir = path.join(input.rootDir, input.snapshotKey);
+  await fs.mkdir(input.rootDir, { recursive: true, mode: 0o700 });
+  await normalizePrivateDirectory(input.rootDir);
   if (await pathExists(targetDir)) {
+    await validateSeedSnapshot(targetDir, input.files);
     return targetDir;
   }
 
-  await fs.mkdir(input.rootDir, { recursive: true });
   const stagingDir = await fs.mkdtemp(path.join(input.rootDir, ".tmp-"));
   try {
     for (const file of input.files) {
-      await fs.writeFile(path.join(stagingDir, file.name), file.contents);
+      const target = path.join(stagingDir, file.name);
+      await fs.writeFile(target, file.contents, { mode: 0o600, flag: "wx" });
+      await normalizePrivateFile(target);
     }
     try {
       await fs.rename(stagingDir, targetDir);
@@ -117,6 +153,7 @@ async function materializeSeedSnapshot(input: {
     throw error;
   }
 
+  await validateSeedSnapshot(targetDir, input.files);
   return targetDir;
 }
 
@@ -178,8 +215,24 @@ export async function writePaperclipClaudeMcpConfig(input: {
       headers: { Authorization: `Bearer ${server.token}` },
     };
   }
-  await fs.mkdir(configDir, { recursive: true });
-  await fs.writeFile(configPath, JSON.stringify({ mcpServers }), { mode: 0o600 });
+  await fs.mkdir(configDir, { recursive: true, mode: 0o700 });
+  await normalizePrivateDirectory(configDir);
+  // Restrict an existing file before replacing its secret-bearing contents;
+  // mode on writeFile only applies when the inode is first created.
+  try { await normalizePrivateFile(configPath); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  // Prepare the full credential-bearing document before replacing the old
+  // directory entry. Never follow a prior auth/config alias while writing.
+  const stagingDir = await fs.mkdtemp(path.join(configDir, ".mcp-"));
+  try {
+    const prepared = path.join(stagingDir, "mcp-config.json");
+    await fs.writeFile(prepared, JSON.stringify({ mcpServers }), { mode: 0o600, flag: "wx" });
+    await normalizePrivateFile(prepared);
+    await fs.rename(prepared, configPath);
+  } finally {
+    // A cleanup error after rename is an uncertain return, not rollback.
+    await fs.rm(stagingDir, { recursive: true, force: true });
+  }
   return configPath;
 }
 
@@ -222,13 +275,29 @@ export function buildRemoteClaudeConfigMaterializationCommand(input: {
   remoteClaudeConfigDir: string;
   remoteClaudeConfigSeedDir: string;
 }): string {
-  return `mkdir -p ${shellQuote(input.remoteClaudeConfigDir)} && ` +
+  const refuseCredentialAlias =
+    `if [ -L ${shellQuote(input.remoteClaudeConfigDir)}/"\${file}" ]; then exit 1; fi; ` +
+    `if [ -e ${shellQuote(input.remoteClaudeConfigDir)}/"\${file}" ] && [ ! -f ${shellQuote(input.remoteClaudeConfigDir)}/"\${file}" ]; then exit 1; fi; ` +
+    `if [ -n "\${HOME:-}" ]; then for source_file in .credentials.json credentials.json; do ` +
+    `if [ ${shellQuote(input.remoteClaudeConfigDir)}/"\${file}" -ef "\${HOME}/.claude/\${source_file}" ]; then exit 1; fi; ` +
+    `done; fi; `;
+  return `set -e; umask 077; ` +
+    `if [ -L ${shellQuote(input.remoteClaudeConfigDir)} ]; then exit 1; fi; ` +
+    `if [ -n "\${HOME:-}" ] && [ ${shellQuote(input.remoteClaudeConfigDir)} -ef "\${HOME}/.claude" ]; then exit 1; fi; ` +
+    `mkdir -p ${shellQuote(input.remoteClaudeConfigDir)}; ` +
+    // Validate every selected leaf before copying seed or credential contents.
+    `for file in .credentials.json credentials.json; do ` + refuseCredentialAlias + `done; ` +
+    `chmod 700 ${shellQuote(input.remoteClaudeConfigDir)}; ` +
     `if [ -d ${shellQuote(input.remoteClaudeConfigSeedDir)} ]; then ` +
     `cp -R ${shellQuote(`${input.remoteClaudeConfigSeedDir}/.`)} ${shellQuote(input.remoteClaudeConfigDir)}/; ` +
     `fi; ` +
-    `for file in .credentials.json credentials.json; do ` +
+    `chmod 700 ${shellQuote(input.remoteClaudeConfigDir)}; ` +
+    `for file in .credentials.json credentials.json; do ` + refuseCredentialAlias +
     `if [ -n "\${HOME:-}" ] && [ -f "\${HOME}/.claude/\${file}" ] && [ ! -f ${shellQuote(input.remoteClaudeConfigDir)}/"\${file}" ]; then ` +
     `cp "\${HOME}/.claude/\${file}" ${shellQuote(input.remoteClaudeConfigDir)}/"\${file}"; ` +
+    `fi; ` +
+    `if [ -f ${shellQuote(input.remoteClaudeConfigDir)}/"\${file}" ]; then ` +
+    `chmod 600 ${shellQuote(input.remoteClaudeConfigDir)}/"\${file}"; ` +
     `fi; ` +
     `done`;
 }
@@ -268,6 +337,27 @@ function isNonEmptyString(value: unknown): value is string {
  * add to the Test result. An operator-provided `CLAUDE_CONFIG_DIR` wins, so
  * the function keeps it and skips the managed materialization.
  */
+type ClaudeProbeCleanupRecovery = Readonly<{
+  operationId: string; runId: string; tempWorkspaceDir: string | null;
+  preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null;
+  restoreFailed: boolean; cleanupFailed: boolean;
+}>;
+const probeCleanupDetails = new WeakMap<ClaudeProbeCleanupError, Readonly<{
+  orderedFailures: readonly unknown[]; recovery: ClaudeProbeCleanupRecovery;
+}>>();
+/** Safe to forward through generic error reporters. Raw failures and resource
+ * identity stay in a private local-memory side table, never error properties. */
+export class ClaudeProbeCleanupError extends Error {
+  constructor(errors: unknown[], recovery: ClaudeProbeCleanupRecovery) {
+    super("Claude environment probe cleanup requires recovery inspection.");
+    this.name = "ClaudeProbeCleanupError";
+    probeCleanupDetails.set(this, Object.freeze({ orderedFailures: Object.freeze([...errors]), recovery: Object.freeze(recovery) }));
+  }
+  static inspect(error: ClaudeProbeCleanupError) {
+    return probeCleanupDetails.get(error);
+  }
+}
+
 export async function prepareSandboxClaudeProbeRuntime(input: {
   managedAiConnection?: boolean;
   runId: string;
@@ -300,6 +390,9 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
   ) {
     let tempWorkspaceDir: string | null = null;
     let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
+    let materializationFailed = false;
+    let materializationError: unknown;
+    let managedRemoteConfigDir: string | undefined;
     try {
       const seedDir = input.managedAiConnection ? input.env.CLAUDE_CONFIG_DIR : await prepareClaudeConfigSeed(process.env, async () => {}, input.companyId);
       const managedRemoteCwd =
@@ -345,13 +438,10 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
           onLog: async () => {},
         },
       });
-      checks.push({
-        code: "claude_managed_config_dir",
-        level: "info",
-        message: "The environment probe is using Paperclip-managed Claude config materialization.",
-        detail: remoteClaudeConfigDir,
-      });
+      managedRemoteConfigDir = remoteClaudeConfigDir;
     } catch (err) {
+      materializationFailed = true;
+      materializationError = err;
       // Keep the raw error out of the Test-result check and the server log. Log
       // only the fixed context, the allowlisted classification, and a safe
       // error class name.
@@ -367,11 +457,29 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
         hint: "Retry the Test. If the failure repeats, check the server log for the redacted diagnostic.",
       });
     } finally {
-      await preparedRuntime?.restoreWorkspace().catch(() => undefined);
-      if (tempWorkspaceDir) {
-        await fs.rm(tempWorkspaceDir, { recursive: true, force: true }).catch(() => undefined);
+      const errors: unknown[] = materializationFailed ? [materializationError] : [];
+      let restoreFailed = false, cleanupFailed = false;
+      try { await preparedRuntime?.restoreWorkspace(); }
+      catch (error) { restoreFailed = true; errors.push(error); }
+      // Restore can copy credentials into this workspace. Unknown restore
+      // outcome retains its exact local resource rather than erasing evidence.
+      if (!restoreFailed && tempWorkspaceDir) {
+        try { await fs.rm(tempWorkspaceDir, { recursive: true, force: true }); }
+        catch (error) { cleanupFailed = true; errors.push(error); }
+      }
+      if (restoreFailed || cleanupFailed) {
+        throw new ClaudeProbeCleanupError(errors, {
+          operationId: randomUUID(), runId: input.runId, tempWorkspaceDir,
+          preparedRuntime, restoreFailed, cleanupFailed,
+        });
       }
     }
+    if (!materializationFailed) checks.push({
+      code: "claude_managed_config_dir",
+      level: "info",
+      message: "The environment probe is using Paperclip-managed Claude config materialization.",
+      detail: managedRemoteConfigDir,
+    });
   }
 
   return checks;

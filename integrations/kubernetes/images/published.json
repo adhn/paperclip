@@ -1,0 +1,27 @@
+{
+  "sourceRevision": "252d9b5077f4eee98ec48225641ef1a02d824158",
+  "workflowRun": "https://github.com/adhn/homelab/actions/runs/38622073966",
+  "images": {
+    "controller": "ghcr.io/adhn/paperclip-eval/controller@sha256:8bd2d8ccef956c777ea6eefa2004152632e0781706031e8cd42ef89bdd7c50ca",
+    "runner-codex": "ghcr.io/adhn/paperclip-eval/runner-codex@sha256:be2c0d2c32ada746c1393c29f0943d8b119b84bec5200d537a6190768111dd34",
+    "runner-claude": "ghcr.io/adhn/paperclip-eval/runner-claude@sha256:5caad96d02f9f78257cf17deb65ecb26b10c0a025004ab8550e47de11ec5f619",
+    "runner-gemini": "ghcr.io/adhn/paperclip-eval/runner-gemini@sha256:16a3fd49442365e70e35913f6e4aec3520d24b01394cb731bee4d2f09192b454",
+    "lan-proxy": "ghcr.io/adhn/paperclip-eval/lan-proxy@sha256:b1dc0e4596856a7eae87a701bb54ce372368e0117dfb2d974ea3cdd8a46fab12"
+  },
+  "pullVerification": "All five immutable digests pulled with existing pull-only operator configuration on 2026-10-14 and matched candidate configuration IDs; Kubernetes pulls not yet tested. This historical record predates controllerPatch; the updated controller is CI-verified, and its Kubernetes pull remains pending the reviewed rollout.",
+  "controllerPatch": {
+    "name": "ssh-descendant-stop-v1",
+    "homelabBuildCommit": "b84aa50f22ae9eb957f341871d99ac735984385d",
+    "upstreamSourceRevision": "252d9b5077f4eee98ec48225641ef1a02d824158",
+    "workflowRun": "https://github.com/adhn/homelab/actions/runs/38800181309",
+    "verification": "Full source build, adapter/server typechecks, 167 focused TypeScript cases (19 heartbeat including 10 DB cases), six supervisor regressions, restricted compiled SSH cancellation/sibling/timeout/spawn-error fixture and controller CLI guards passed. Live post-merge provider repeat remains pending."
+  },
+  "controllerLeasePatch": {
+    "name": "ssh-lease-stop-v1",
+    "homelabBuildCommit": "22ac57bc81e5ad7431ad47d5b6202799943251f9",
+    "upstreamSourceRevision": "252d9b5077f4eee98ec48225641ef1a02d824158",
+    "workflowRun": "https://github.com/adhn/homelab/actions/runs/38809556291",
+    "verification": "Full production source build, adapter/server typechecks, 199 focused TypeScript cases (153 adapter, 46 non-root database-backed heartbeat), six supervisor cases, restricted actual-SSH invocation/sibling/timeout/spawn-error fixture and controller CLI guards passed. Registry manifest independently inspected. Live lifecycle acceptance awaits human merge and deployment. Historical receipts are not backfilled.",
+    "previousControllerImage": "ghcr.io/adhn/paperclip-eval/controller@sha256:6b60f691374c89f097c80abd6b92ef13a537b7bca35dace9c65320def744013a"
+  }
+}

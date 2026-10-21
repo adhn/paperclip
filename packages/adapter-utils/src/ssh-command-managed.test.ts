@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,7 +13,7 @@ vi.mock("node:child_process", async (importOriginal) => {
     }),
     spawn: vi.fn((file: string, args: string[], options: Parameters<typeof actual.spawn>[2]) => {
       if (file !== "ssh") throw new Error(`Unexpected subprocess ${file}`);
-      return actual.spawn("sh", ["-c", args.at(-1)!], options);
+      return actual.spawn("sh", ["-c", `exec ${args.at(-1)!}`], options);
     }),
   };
 });
@@ -25,10 +25,11 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
-async function runner() {
+async function runner(maxBufferBytes?: number) {
   const cwd = await mkdtemp(path.join(os.tmpdir(), "ssh-managed-argv-"));
   roots.push(cwd);
   return createSshCommandManagedRuntimeRunner({
+    maxBufferBytes,
     spec: {
       host: "fixture.invalid", username: "fixture", port: 22,
       remoteCwd: cwd, remoteWorkspacePath: cwd,
@@ -67,4 +68,17 @@ describe("SSH command-managed argv", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("two words\n");
   });
+  it("waits for the SSH child to close after output overflow before returning failure", async () => {
+    const execute = await runner(64);
+    const marker = path.join(roots.at(-1)!, "closed-marker");
+    const result = await execute.execute({ command: "python3", args: ["-c",
+      "import signal,sys,time,pathlib; " +
+      "signal.signal(signal.SIGTERM,lambda *_: (time.sleep(0.1),pathlib.Path(sys.argv[1]).write_text('closed'),sys.exit(0))); " +
+      "sys.stdout.write('x'*4096); sys.stdout.flush(); time.sleep(10)", marker],
+      stdin: "", timeoutMs: 5000 });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toMatch(/maxBuffer/);
+    expect(await readFile(marker, "utf8")).toBe("closed");
+  });
+
 });

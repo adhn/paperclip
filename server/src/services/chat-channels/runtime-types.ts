@@ -1,6 +1,6 @@
 import type { Message, Thread } from "chat";
 import type { ChatSdkMessageCallbackEvent } from "../chat-sdk-runtime.js";
-import type { Db, chatEndpoints } from "@paperclipai/db";
+import type { Db, chatEndpoints, toolConnections } from "@paperclipai/db";
 import type { ToolCredentialSecretRef, ChatEndpointSetupState, ChatEndpointCallbackSurfaces } from "@paperclipai/shared";
 import type { ChatEndpointRuntime } from "../voice/voice-runtime.js";
 
@@ -33,6 +33,7 @@ export type InboundRuntimeContext = LifecycleRuntimeFence &
 
 export type EndpointRecord = {
   endpoint: EndpointRow;
+  connection: typeof toolConnections.$inferSelect;
   assignedAgentName: string;
   connectionName: string;
   applicationId: string;

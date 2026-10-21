@@ -1,3 +1,6 @@
+import { withCapacityOperation } from "../services/execution-capacity-lifetime.js";
+import { executionCapacity } from "../services/execution-capacity-context.js";
+import { capacityFingerprint } from "../services/execution-capacity-policy.js";
 import { cancellationRequestId } from "../services/native-runtime/native-cancellation-request.js";
 import { agentEnvironmentTestService } from "../services/agent-environment-test.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
@@ -2963,6 +2966,13 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const type = assertKnownAdapterType(req.params.type as string);
+    // Instance-level discovery has no admitted agent/account/runner identity.
+    // The candidate can serve declared metadata without executing controller
+    // CLIs or issuing unreserved provider discovery requests.
+    if (executionCapacity(db)) {
+      res.json(requireServerAdapter(type).models ?? []);
+      return;
+    }
     const poolId = asNonEmptyString(req.query.poolId);
     if (poolId) {
       const pool = (await aiConnectionRouterService(db).selectable(companyId, getActorInfo(req).actorId)).find(pool => pool.id === poolId);
@@ -3015,6 +3025,7 @@ export function agentRoutes(
     assertCompanyAccess(req, companyId);
     const type = assertKnownAdapterType(req.params.type as string);
 
+    if (executionCapacity(db)) { res.json(null); return; }
     const detected = await detectAdapterModel(type);
     res.json(detected);
   });
@@ -3171,6 +3182,12 @@ export function agentRoutes(
         res.json({ adapterType: type, status: checks.some(c => c.level === "error") ? "fail" : checks.some(c => c.level === "warn") ? "warn" : "pass", testedAt: new Date().toISOString(), checks });
         return;
       }
+      if (executionCapacity(db) && (!savedAgent || savedAgent.adapterType !== type ||
+          requestedEnvironmentId !== savedAgent.defaultEnvironmentId || aiBinding || req.body.testCredentials ||
+          capacityFingerprint(adapterConfigForTest) !== capacityFingerprint(savedAgent.adapterConfig)))
+        throw conflict("Save and admit this agent configuration before testing", { code: "capacity_configuration_changed" });
+      await withCapacityOperation(db, { companyId, agentId: savedAgentId ?? undefined,
+        environmentId: requestedEnvironmentId ?? "", kind: "adapter_test", key: `agent:${savedAgentId ?? "draft"}:test` }, async () => {
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         companyId,
         adapterConfigForTest,
@@ -3317,6 +3334,7 @@ export function agentRoutes(
       } finally {
         await release(releaseStatus);
       }
+      });
     },
   );
 

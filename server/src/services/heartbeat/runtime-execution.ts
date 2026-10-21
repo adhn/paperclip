@@ -33,6 +33,7 @@ import { applyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspa
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { isConversation } from "../agent-conversations.js";
 import { withAdapterExecutionPhase } from "@paperclipai/adapter-utils/execution-phase";
+import { recordSshLeaseProcessStopped } from "./ssh-lease-stop.js";
 import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { registerAdapterExecutionControl } from "../adapter-execution-control.js";
 import { resolveManagedOpenAiBilling } from "@paperclipai/adapter-utils";
@@ -125,6 +126,7 @@ export interface HeartbeatRuntimeExecutionInput {
     nativeWorkspaceSync: Selected["nativeWorkspaceSync"];
     workspaceRestoreSource: Parameters<typeof recordLegacyWorkspaceRestoreFailure>[3];
     remoteExecution: unknown;
+    activeEnvironmentLease?: Selection["workspace"]["activeEnvironmentLease"];
   };
   config: Pick<Selection["config"], "runtimeConfig" | "resolvedConfig" | "managedAiRuntime"> & {
     resolvedInstanceSettings: { experimental: Pick<Awaited<ReturnType<ReturnType<typeof instanceSettingsService>["getExperimental"]>>, "enableWorkspaceBranchReconcileForward" | "enableWorkspaceDirtyQuarantineRepair"> };
@@ -819,7 +821,18 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
                   issueId,
                 );
               },
-              onProviderStopped: collectStoppedInstructions,
+              onProviderStopped: async (proof) => {
+                const lease = input.workspace.activeEnvironmentLease?.lease;
+                if (executionTarget?.kind === "remote" && executionTarget.transport === "ssh") {
+                  if (!lease || !proof) throw new Error("SSH lease termination proof is unavailable");
+                  await recordSshLeaseProcessStopped(db, {
+                    companyId: run.companyId, runId: run.id, agentId: run.agentId,
+                    leaseId: lease.id, environmentId: lease.environmentId,
+                    providerLeaseId: lease.providerLeaseId, invocationId: proof.sshInvocationId,
+                  });
+                }
+                await collectStoppedInstructions?.();
+              },
               onDispatch: markDispatchStarted,
               signal: executionControl.controller.signal,
               ...(executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" ? {

@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fchmodSync, fstatSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { resolveDefaultSecretsKeyFilePath } from "../home-paths.js";
 import type {
@@ -59,8 +59,16 @@ function loadOrCreateMasterKey(allowCreate = true): Buffer {
 
   const keyPath = resolveMasterKeyFilePath();
   if (existsSync(keyPath)) {
-    enforceKeyFilePermissionsBestEffort(keyPath);
-    const raw = readFileSync(keyPath, "utf8");
+    // Read and sync the same opened winner, including a prior publication whose
+    // directory sync failed. Never generate a replacement after such a failure.
+    const descriptor = openSync(keyPath, constants.O_RDONLY | constants.O_NONBLOCK);
+    const raw = withKeyDescriptor(descriptor, () => {
+      enforceKeyDescriptorPermissions(descriptor);
+      const contents = readFileSync(descriptor, "utf8");
+      fsyncSync(descriptor);
+      return contents;
+    });
+    syncKeyAncestors(keyPath);
     const decoded = decodeMasterKey(raw);
     if (!decoded) {
       throw badRequest(`Invalid secrets master key at ${keyPath}`);
@@ -73,8 +81,12 @@ function loadOrCreateMasterKey(allowCreate = true): Buffer {
   mkdirSync(dir, { recursive: true });
   const generated = randomBytes(32);
   const temporaryPath = `${keyPath}.${process.pid}.${randomBytes(12).toString("hex")}.tmp`;
-  writeFileSync(temporaryPath, generated.toString("base64"), { encoding: "utf8", mode: 0o600, flag: "wx" });
+  const temporaryDescriptor = openSync(temporaryPath, "wx", 0o600);
   try {
+    withKeyDescriptor(temporaryDescriptor, () => {
+      writeFileSync(temporaryDescriptor, generated.toString("base64"), { encoding: "utf8" });
+      fsyncSync(temporaryDescriptor);
+    });
     // A hard link publishes a complete file without overwriting a competitor's
     // key. Opening the destination with wx would expose an empty/partial file.
     try {
@@ -82,20 +94,62 @@ function loadOrCreateMasterKey(allowCreate = true): Buffer {
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
     }
-  } finally {
-    unlinkSync(temporaryPath);
+  } catch (original) {
+    try { unlinkSync(temporaryPath); }
+    catch (cleanup) {
+      throw new AggregateError([original, cleanup], "Secrets master key preparation and cleanup failed");
+    }
+    throw original;
   }
+  unlinkSync(temporaryPath);
   return loadOrCreateMasterKey(false);
 }
 
-function enforceKeyFilePermissionsBestEffort(keyPath: string) {
-  try {
-    const mode = statSync(keyPath).mode & 0o777;
-    if ((mode & 0o077) !== 0) {
-      chmodSync(keyPath, 0o600);
+/** Flush every directory link, including recursive mkdir ancestry. For a configured
+ * symlink key, flush both the alias ancestry and the physical target ancestry.
+ * This is a local filesystem barrier, not independent backup or key custody. */
+function syncKeyAncestors(keyPath: string): void {
+  const directories = new Set<string>();
+  for (const start of [path.dirname(keyPath), path.dirname(realpathSync(keyPath))]) {
+    let current = start;
+    for (;;) {
+      directories.add(current);
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
     }
-  } catch {
-    // best effort only; health checks surface persistent permission problems.
+  }
+  for (const directory of directories) {
+    const descriptor = openSync(directory, "r");
+    withKeyDescriptor(descriptor, () => fsyncSync(descriptor));
+  }
+}
+
+/** Close exactly once, including ambiguous close failures; retain causal order. */
+function withKeyDescriptor<T>(descriptor: number, operation: () => T): T {
+  let result: T;
+  try { result = operation(); }
+  catch (original) {
+    try { closeSync(descriptor); }
+    catch (cleanup) {
+      throw new AggregateError([original, cleanup], "Secrets master key operation and close failed");
+    }
+    throw original;
+  }
+  closeSync(descriptor);
+  return result;
+}
+
+function enforceKeyDescriptorPermissions(descriptor: number): void {
+  const owner = process.geteuid?.();
+  let info = fstatSync(descriptor);
+  if (!info.isFile() || (owner !== undefined && info.uid !== owner)) {
+    throw new Error("Secrets master key must be an owned regular file");
+  }
+  if ((info.mode & 0o077) !== 0) fchmodSync(descriptor, 0o600);
+  info = fstatSync(descriptor);
+  if (!info.isFile() || (owner !== undefined && info.uid !== owner) || (info.mode & 0o077) !== 0) {
+    throw new Error("Secrets master key requires private file permissions");
   }
 }
 

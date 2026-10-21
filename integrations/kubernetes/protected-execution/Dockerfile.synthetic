@@ -1,0 +1,5 @@
+ARG BASE=python:3.11-slim-bookworm
+FROM ${BASE}
+RUN mkdir /attempt && chown 1000:1000 /attempt
+USER 1000:1000
+ENTRYPOINT ["python3"]

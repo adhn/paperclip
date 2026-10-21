@@ -1,0 +1,64 @@
+{
+  "sourceRevision": "252d9b5077f4eee98ec48225641ef1a02d824158",
+  "releaseTag": "paperclip-eval-candidates-20261013-252d9b5077f4",
+  "registryPrefix": "ghcr.io/adhn/paperclip-eval",
+  "inputHashes": {
+    "scripts/prepare-controller.py": "7919e9c70288445422a9dc353d9ecf9df1af44c632cc0d5813367a168167a9c6",
+    "images/inputs.json": "f936ef41d1b7ecdca67f718b313b4a4abfd9175a8593ed2ca2c650e7f8e5e820",
+    "images/controller/pnpm-lock.yaml": "f4158d881915c767040519545a6538391d59282ac6bf5b15c3e784767ce220de",
+    "images/controller/deny-local.sh": "92a70468675a7b8357837076eb9bf4d4e7b9c15b55bbbadbfd71193443a9df36",
+    "images/controller/healthcheck.mjs": "f5eb90b6bdd5207613d2ae91e405dc2a3c22f75039dc2e5a3f5865b6df6ce75f",
+    "images/runner/Dockerfile": "8781baad957e8e8610c781c4f7a05e33c49eeacdc7b36b4f2811d61079959909",
+    "images/runner/entrypoint.sh": "beec622e943184ee2344487066f7c1f2f8c6a995c47620643deec84f3e3691e3",
+    "images/runner/sshd_config": "5ed3d85922b8a0f429921ea0a61c8514bb434a4b805615ac87312d9fbf9dc6ed",
+    "images/lan-proxy/Dockerfile": "85cd994c7e5f33e5475bbea1c822d95ca7706750f6a549d798b51330841561a5",
+    "images/runner/codex/package.json": "625e671bad9f3adee9c5cdebcb3af4f38b1fe16660b978efc3ebc512c3db63c0",
+    "images/runner/codex/package-lock.json": "3342188db684b86d577973ab63f42b79abae64af662192aa5f183acef9a3e0df",
+    "images/runner/claude/package.json": "906c08e31bfe145b3f641af91e73f8c702cdece4cd23651d92f5d23ee18b562b",
+    "images/runner/claude/package-lock.json": "3ed54d2cbace6cfb71d916e5a960914ccbb7c1e4d422667a1622be0f7d79ca0e",
+    "images/runner/gemini/package.json": "99cba211e6ccbeb964fafadd7933c4df42e69984d25aad87518f0f8382e81a2c",
+    "images/runner/gemini/package-lock.json": "096dc3cfe48983f007237e75d8ba01c7ef5c667cb3b4a3bb00cf7e8b3a81538a"
+  },
+  "images": {
+    "controller": {
+      "localRef": "paperclip-eval/controller:eval-252d9b5077f4eee98ec48225641ef1a02d824158",
+      "imageId": "sha256:d9e2a49632bdf43a8ebc8126a3789e828deb7a14d67e32a1eca23e54df75956d",
+      "architecture": "amd64",
+      "asset": "controller.tar.gz",
+      "sha256": "07126496f8e0c40991e2617a8011fbe652e82e0972dafd0d6cc1f9b9d5b1c4bf",
+      "bytes": 1397309610
+    },
+    "runner-codex": {
+      "localRef": "paperclip-eval/runner-codex:eval-252d9b5077f4eee98ec48225641ef1a02d824158",
+      "imageId": "sha256:080bfa5c4526f159e24b780ca92cc9bb63b85e9e08c4c48ce6bee01be7993b77",
+      "architecture": "amd64",
+      "asset": "runner-codex.tar.gz",
+      "sha256": "5f3c875b1eb71c296e141dd18f63ad06f3b3df6e074570b33240950f78600712",
+      "bytes": 461549248
+    },
+    "runner-claude": {
+      "localRef": "paperclip-eval/runner-claude:eval-252d9b5077f4eee98ec48225641ef1a02d824158",
+      "imageId": "sha256:89cb6e13063e6771fedaff6cfc8118422c88732bc40b8cb522575853c9670700",
+      "architecture": "amd64",
+      "asset": "runner-claude.tar.gz",
+      "sha256": "c7f8920b799bf4aebdfb8fb3715b436017da833ad6591fe73fafff6209b9715d",
+      "bytes": 404798075
+    },
+    "runner-gemini": {
+      "localRef": "paperclip-eval/runner-gemini:eval-252d9b5077f4eee98ec48225641ef1a02d824158",
+      "imageId": "sha256:b09d81b85d95f384676a8f1068baf48b0720a65fb4e5227e91a5b26fbeec8683",
+      "architecture": "amd64",
+      "asset": "runner-gemini.tar.gz",
+      "sha256": "34dcac8eb0b3bccca2d8e0f2bddecc18f0b433d40fd0473e8cabd12600f93e15",
+      "bytes": 320500489
+    },
+    "lan-proxy": {
+      "localRef": "paperclip-eval/lan-proxy:eval-252d9b5077f4eee98ec48225641ef1a02d824158",
+      "imageId": "sha256:9f0af219a2f9c42072de508b0aa6747152aaf4503a2c2555c85134d8c498bf29",
+      "architecture": "amd64",
+      "asset": "lan-proxy.tar.gz",
+      "sha256": "7c63692cec9ee3ecfcc23cd170219a0b37da31d7a556bdff391606d73c3efbc7",
+      "bytes": 46728587
+    }
+  }
+}

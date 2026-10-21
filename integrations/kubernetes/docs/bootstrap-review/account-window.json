@@ -1,0 +1,44 @@
+{
+  "status": "proposal; no provider execution authorized by this file",
+  "operatorUpdate": "2026-10-19: phone/other clients idle; current laptop remains active",
+  "providers": {
+    "codex": {
+      "accountUsageConsumers": [
+        "cluster CLI",
+        "current laptop",
+        "idle phone/other clients"
+      ],
+      "externalRefreshGrantRelationship": "no known copied laptop/cluster credential chain; provider-side grant independence unverified",
+      "externalCredentialCopyHistory": "operator confirms no later laptop/cluster copies; setup used separate runner logins",
+      "admissionCredentialCapacity": 1,
+      "concurrentProviderTasks": 1,
+      "tasks": 10,
+      "taskTimeoutSeconds": 600,
+      "stageTimeoutSeconds": 7200,
+      "automaticBodyRetries": 0,
+      "paidApiFallback": false,
+      "providerQuotaHeadroom": "must be measured before dispatch; task cap is not a token/quota guarantee"
+    },
+    "claude": {
+      "accountUsageConsumers": [
+        "cluster CLI",
+        "current laptop",
+        "idle phone/other clients"
+      ],
+      "externalRefreshGrantRelationship": "no known copied laptop/cluster credential chain; provider-side grant independence unverified",
+      "externalCredentialCopyHistory": "operator confirms no later laptop/cluster copies; setup used separate runner logins",
+      "admissionCredentialCapacity": 1,
+      "concurrentProviderTasks": 1,
+      "tasks": 10,
+      "taskTimeoutSeconds": 600,
+      "stageTimeoutSeconds": 7200,
+      "automaticBodyRetries": 0,
+      "paidApiFallback": false,
+      "providerQuotaHeadroom": "must be measured before dispatch; task cap is not a token/quota guarantee"
+    }
+  },
+  "gemini": "deferred",
+  "laptopUsage": "must be counted; current activity does not establish a quiet serial test window",
+  "sourceHistory": "Saved 2026-10-14 handoff records supported runner login; Codex runner credential seeded to controller, Claude remained on runner. This does not attest external grants.",
+  "operatorCredentialUpdate": "2026-10-19: operator confirms no later credential copies between laptop and cluster"
+}

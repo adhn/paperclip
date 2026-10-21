@@ -87,6 +87,34 @@ function guardedDatabase() {
 describe("heartbeat run-control module boundary", () => {
   afterEach(() => adapterExecutionControls.clear());
 
+  it("holds SSH cancellation until remote proof and rejects missing proof without acknowledgement", async () => {
+    const database = guardedDatabase();
+    const deps = callbacks(database.db);
+    const run = { id: "ssh-stop", agentId: "ssh-agent", status: "running", runtimeMode: "legacy", runtimeModeResolvedAt: new Date() } as Run;
+    deps.getRun.mockResolvedValue(run);
+    deps.getAgent.mockResolvedValue({ id: run.agentId, adapterType: "codex_local", adapterConfig: {} } as never);
+    let rejectStop!: (error: Error) => void;
+    const stopRemote = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectStop = reject; }));
+    runningProcesses.set(run.id, { child: { pid: 424242 } as never, graceSec: 2, processGroupId: 424242, stopRemote });
+    deps.activeRunExecutions.add(run.id);
+    try {
+      const first = createHeartbeatRunControl(database.db, deps).cancelRunInternal(run.id);
+      const result = Promise.allSettled([first]);
+      await vi.waitFor(() => expect(stopRemote).toHaveBeenCalledOnce());
+      expect(deps.setRunStatusFromLive).not.toHaveBeenCalled();
+      expect(terminateLocalService).not.toHaveBeenCalled();
+      const failure = new Error("Remote termination unverified");
+      rejectStop(failure);
+      expect(await result).toEqual([{ status: "rejected", reason: failure }]);
+      expect(deps.setRunStatusFromLive).not.toHaveBeenCalled();
+      expect(deps.finalizeAgentStatus).not.toHaveBeenCalled();
+      expect(deps.startNextQueuedRunForAgent).not.toHaveBeenCalled();
+      expect(runningProcesses.has(run.id)).toBe(true);
+      expect(database.access).not.toHaveBeenCalled();
+    } finally {
+      runningProcesses.delete(run.id);
+    }
+  });
   it("constructs without database access, cancellation, or cleanup", () => {
     const database = guardedDatabase();
     const deps = callbacks(database.db);
@@ -195,6 +223,21 @@ describe.skipIf(!support.supported)("heartbeat run-control database wiring", () 
     runningProcesses.set(run.id, { child: { pid: 424242 } as never, graceSec: 4, processGroupId: 424242 });
     return run;
   }
+
+  it("does not signal an exited SSH client after verified remote stop", async () => {
+    const { company, agent } = await fixture();
+    const run = await liveRun(company.id, agent.id);
+    const stopRemote = vi.fn(async () => undefined);
+    runningProcesses.set(run.id, {
+      child: { pid: 424242, exitCode: 125, signalCode: null } as never,
+      graceSec: 2, processGroupId: 424242, stopRemote,
+    });
+    const deps = callbacks(db);
+    expect(await createHeartbeatRunControl(db, deps).cancelRunInternal(run.id)).toMatchObject({ status: "cancelled" });
+    expect(stopRemote).toHaveBeenCalledOnce();
+    expect(terminateLocalService).not.toHaveBeenCalled();
+    expect((await deps.getRun(run.id))?.status).toBe("cancelled");
+  });
 
   it("reports a missing run without entering cancellation", async () => {
     const deps = callbacks(db);

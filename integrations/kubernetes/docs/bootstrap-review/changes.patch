@@ -1,0 +1,620 @@
+--- a/packages/db/src/schema/execution_admission.ts
++++ b/packages/db/src/schema/execution_admission.ts
+@@ -123,0 +124,28 @@
++
++// Historical occupancy is independent of fresh reservations and scope drains.
++// Original native rows remain untouched. No TTL, cascade, or run-state projection
++// is allowed to erase an unresolved hold. A separate reviewed present-day
++// reconciliation ledger is required before any release mechanism is introduced.
++export const admissionLegacyHolds = pgTable("execution_admission_legacy_holds", {
++  source: text("source").primaryKey(),
++  companyId: uuid("company_id").notNull().references(() => companies.id),
++  agentId: uuid("agent_id").references(() => agents.id),
++  runId: uuid("run_id").references(() => heartbeatRuns.id),
++  environmentId: uuid("environment_id"),
++  scopes: text("scopes").array().notNull(),
++  evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull(),
++  evidenceHash: text("evidence_hash").notNull(),
++  policyHash: text("policy_hash").notNull(),
++  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
++}, t => [
++  check("execution_admission_legacy_scopes", sql`cardinality(${t.scopes}) > 0`),
++  check("execution_admission_legacy_hash", sql`${t.evidenceHash} ~ '^[a-f0-9]{64}$' and ${t.policyHash} ~ '^[a-f0-9]{64}$'`),
++]);
++
++export const admissionBootstraps = pgTable("execution_admission_bootstraps", {
++  epoch: uuid("epoch").primaryKey().references(() => admissionEpochs.epoch),
++  policyHash: text("policy_hash").notNull(),
++  instance: text("instance").notNull(),
++  mode: text("mode").$type<"held">().notNull(),
++  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
++}, t => [check("execution_admission_bootstrap_mode", sql`${t.mode} = 'held'`)]);
+--- a/packages/db/src/migrations/meta/_journal.json
++++ b/packages/db/src/migrations/meta/_journal.json
+@@ -2397,0 +2398,7 @@
++    },
++    {
++      "idx": 344,
++      "version": "7",
++      "when": 1792432364807,
++      "tag": "0344_volatile_colossus",
++      "breakpoints": true
+--- a/server/src/services/execution-admission.ts
++++ b/server/src/services/execution-admission.ts
+@@ -7 +7 @@
+-  admissionAttempts, admissionEpochs, admissionProjects, admissionScheduler,
++  admissionAttempts, admissionEpochs, admissionLegacyHolds, admissionProjects, admissionScheduler,
+@@ -25 +25,2 @@
+-export function executionAdmissionService(db: Db, epoch: string, policy?: ReturnType<typeof trustedCapacityPolicy>) {
++export function executionAdmissionService(db: Db, epoch: string, policy?: ReturnType<typeof trustedCapacityPolicy>, options: { startsHeld?: boolean } = {}) {
++  const startsHeld = options.startsHeld === true;
+@@ -49 +50 @@
+-      if (scheduler.draining) {
++      if (startsHeld || scheduler.draining) {
+@@ -88 +89,6 @@
+-        for (const scope of scopes) {
++        // A scope drain can be changed independently. Historical holds remain
++        // an additional gate, including unknown occupancy at instance scope.
++        const [legacy] = await tx.select({ source: admissionLegacyHolds.source }).from(admissionLegacyHolds)
++          .where(sql`${admissionLegacyHolds.scopes} && ARRAY[${sql.join(attempt.scopes.map(key => sql`${key}`), sql`, `)}]::text[]`).limit(1);
++        if (legacy) reason = "legacy_occupancy_unreconciled";
++        for (const scope of legacy ? [] : scopes) {
+@@ -193 +199 @@
+-    ...admissionOperationMethods({ db, epoch, policy, locked, owned,
++    ...admissionOperationMethods({ db, epoch, policy, startsHeld, locked, owned,
+@@ -314,0 +321 @@
++      if (startsHeld) throw new Error("capacity_bootstrap_held");
+@@ -333,0 +341 @@
++      if (startsHeld) throw new Error("capacity_bootstrap_held");
+@@ -341,0 +350 @@
++      if (startsHeld) throw new Error("capacity_bootstrap_held");
+--- a/server/src/__tests__/execution-admission.test.ts
++++ b/server/src/__tests__/execution-admission.test.ts
+@@ -40 +40 @@
+-    await db.execute(sql`truncate execution_admission_restorations, execution_admission_commands, execution_admission_runner_epochs, execution_admission_attempts, execution_admission_projects,
++    await db.execute(sql`truncate execution_admission_bootstraps, execution_admission_legacy_holds, execution_admission_restorations, execution_admission_commands, execution_admission_runner_epochs, execution_admission_attempts, execution_admission_projects,
+--- a/server/src/services/heartbeat/queue.test.ts
++++ b/server/src/services/heartbeat/queue.test.ts
+@@ -145 +145 @@
+-    await db.execute(sql`truncate execution_admission_restorations, execution_admission_commands, execution_admission_runner_epochs, execution_admission_attempts, execution_admission_projects,
++    await db.execute(sql`truncate execution_admission_bootstraps, execution_admission_legacy_holds, execution_admission_restorations, execution_admission_commands, execution_admission_runner_epochs, execution_admission_attempts, execution_admission_projects,
+--- a/server/src/__tests__/heartbeat-queued-run-claim-isolation.test.ts
++++ b/server/src/__tests__/heartbeat-queued-run-claim-isolation.test.ts
+@@ -70 +70 @@
+-    await db.execute(sql`truncate execution_admission_restorations, execution_admission_commands, execution_admission_runner_epochs, execution_admission_attempts, execution_admission_projects,
++    await db.execute(sql`truncate execution_admission_bootstraps, execution_admission_legacy_holds, execution_admission_restorations, execution_admission_commands, execution_admission_runner_epochs, execution_admission_attempts, execution_admission_projects,
+--- a/server/src/services/execution-capacity-policy.ts
++++ b/server/src/services/execution-capacity-policy.ts
+@@ -57,0 +58,5 @@
++export function capacityScopeKey(kind: string, identity: string) {
++  if (!identity.trim() || identity !== identity.trim() || /[\u0000-\u001f]/.test(identity)) throw new Error("invalid_capacity_identity");
++  return `${kind}:${capacityFingerprint(identity)}`;
++}
++
+@@ -62,4 +67 @@
+-  function key(kind: string, identity: string) {
+-    if (!identity.trim() || identity !== identity.trim() || /[\u0000-\u001f]/.test(identity)) throw new Error("invalid_capacity_identity");
+-    return `${kind}:${capacityFingerprint(identity)}`;
+-  }
++  const key = capacityScopeKey;
+--- a/server/src/services/execution-capacity-context.ts
++++ b/server/src/services/execution-capacity-context.ts
+@@ -21,0 +22,5 @@
++const required = new WeakSet<Db>();
++export function requireExecutionCapacity(db: Db) {
++  if (contexts.has(db)) throw new Error("capacity_already_installed");
++  required.add(db);
++}
+@@ -45 +50,5 @@
+-export function executionCapacity(db: Db) { return contexts.get(db); }
++export function executionCapacity(db: Db) {
++  const admission = contexts.get(db);
++  if (!admission && required.has(db)) throw new Error("capacity_bootstrap_required");
++  return admission;
++}
+@@ -52 +61 @@
+-  const admission = contexts.get(db);
++  const admission = executionCapacity(db);
+@@ -70 +79 @@
+-  const admission = contexts.get(db);
++  const admission = executionCapacity(db);
+@@ -83 +92 @@
+-  const admission = contexts.get(db);
++  const admission = executionCapacity(db);
+--- a/server/src/services/execution-admission-operations.ts
++++ b/server/src/services/execution-admission-operations.ts
+@@ -14 +14 @@
+-  db: Db; epoch: string; policy?: ReturnType<typeof trustedCapacityPolicy>;
++  db: Db; epoch: string; startsHeld?: boolean; policy?: ReturnType<typeof trustedCapacityPolicy>;
+@@ -22 +22 @@
+-export function admissionOperationMethods({ db, epoch, policy, locked, owned, claim }: Dependencies) {
++export function admissionOperationMethods({ db, epoch, policy, startsHeld, locked, owned, claim }: Dependencies) {
+@@ -129,0 +130 @@
++      if (startsHeld) throw new Error("capacity_bootstrap_held");
+@@ -189,0 +191 @@
++      if (startsHeld) throw new Error("capacity_bootstrap_held");
+@@ -201,0 +204 @@
++      if (startsHeld) throw new Error("capacity_bootstrap_held");
+--- a/server/src/index.ts
++++ b/server/src/index.ts
+@@ -0,0 +1 @@
++import { bootstrapHeldExecutionAdmission, loadProductionAdmissionPolicy, requireAdmissionMigrations } from "./services/execution-admission-bootstrap.js";
+@@ -223,0 +225,5 @@
++  let config = loadConfig();
++  // Candidate production entry point: no opt-out or missing-service fallback.
++  // Migrations are a separate reviewed maintenance operation.
++  const admissionPolicy = await loadProductionAdmissionPolicy({ databaseUrl: config.databaseUrl,
++    autoApply: process.env.PAPERCLIP_MIGRATION_AUTO_APPLY, policyPath: process.env.PAPERCLIP_ADMISSION_POLICY_FILE });
+@@ -225 +230,0 @@
+-  let config = loadConfig();
+@@ -274,0 +280,6 @@
++    // No journal repair, fresh-database apply, non-TTY auto-approval or prompt
++    // may run in this mandatory-admission production entry point.
++    if (process.env.PAPERCLIP_MIGRATION_AUTO_APPLY === "false") {
++      await requireAdmissionMigrations(connectionString);
++      return "already applied";
++    }
+@@ -655,0 +667,3 @@
++  const admissionBootstrap = await bootstrapHeldExecutionAdmission(db as any, admissionPolicy);
++  logger.info({ mode: admissionBootstrap.mode, epoch: admissionBootstrap.epoch,
++    policyHash: admissionBootstrap.policyHash, legacyHolds: admissionBootstrap.legacyHolds }, "Execution admission held");
+--- /dev/null
++++ b/server/src/services/execution-admission-bootstrap.ts
+@@ -0,0 +1,186 @@
++import { constants } from "node:fs";
++import { open, realpath, stat } from "node:fs/promises";
++import { dirname, isAbsolute } from "node:path";
++import { randomUUID } from "node:crypto";
++import { z } from "zod";
++import { eq, inArray, sql } from "drizzle-orm";
++import { admissionAttempts, admissionBootstraps, admissionCommands, admissionEpochs, admissionLegacyHolds,
++  admissionScheduler, environmentLeases, heartbeatRuns, inspectMigrations, type Db } from "@paperclipai/db";
++import { capacityFingerprint, capacityScopeKey, trustedCapacityPolicy } from "./execution-capacity-policy.js";
++import { executionAdmissionService } from "./execution-admission.js";
++import { requireExecutionCapacity } from "./execution-capacity-context.js";
++
++const identity = z.string().min(1).max(512).refine(value => value.trim() === value && !/[\u0000-\u001f]/.test(value));
++const uuid = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
++const policySchema = z.object({
++  version: z.literal(1),
++  // This first bootstrap stage has no execution mode or drain-release switch.
++  // Protected runner authority and complete state/refresh contracts must land
++  // before a separately reviewed implementation can allow any starts.
++  mode: z.literal("held"),
++  instance: identity,
++  pendingLimit: z.number().int().min(1).max(4),
++  legacyOwners: z.array(z.object({
++    companyId: uuid, agentId: uuid, environmentId: uuid,
++    runner: identity, providerAccount: identity, workspace: identity, session: identity, credential: identity,
++  }).strict()).max(1000),
++}).strict();
++export type AdmissionBootstrapPolicy = z.infer<typeof policySchema>;
++export function parseAdmissionBootstrapPolicy(value: unknown): AdmissionBootstrapPolicy {
++  const parsed = policySchema.safeParse(value);
++  // Never echo arbitrary policy or credential-bearing values through errors.
++  if (!parsed.success) throw new Error("invalid_admission_bootstrap_policy");
++  const policy = parsed.data;
++  const owners = new Set<string>();
++  const environments = new Map<string, string>();
++  for (const owner of policy.legacyOwners) {
++    const key = `${owner.companyId}:${owner.agentId}:${owner.environmentId}`;
++    if (owners.has(key)) throw new Error("duplicate_admission_legacy_owner");
++    owners.add(key);
++    const resource = capacityFingerprint([owner.runner, owner.providerAccount, owner.workspace, owner.session, owner.credential]);
++    const prior = environments.get(owner.environmentId);
++    if (prior && prior !== resource) throw new Error("conflicting_admission_legacy_family");
++    environments.set(owner.environmentId, resource);
++  }
++  return policy;
++}
++
++/** Only an operator-owned file on protected host configuration is accepted.
++ * Projected ConfigMap symlinks are resolved, then the opened inode and every
++ * canonical parent are checked. Agent-writable homes/workspaces are rejected.
++ */
++export async function loadAdmissionBootstrapPolicy(path: string | undefined) {
++  if (!path || !isAbsolute(path)) throw new Error("admission_bootstrap_policy_required");
++  async function protectedParents(filePath: string) {
++    for (let parent = dirname(filePath); ; parent = dirname(parent)) {
++      const directory = await stat(parent);
++      if (!directory.isDirectory() || directory.uid !== 0 || (directory.mode & 0o022))
++        throw new Error("admission_bootstrap_policy_unprotected");
++      if (parent === "/") break;
++    }
++  }
++  // Protect the configured name as well as its target. An agent-writable alias
++  // to an otherwise trusted file must not select which policy is loaded.
++  await protectedParents(path);
++  const canonical = await realpath(path);
++  const file = await open(canonical, constants.O_RDONLY | constants.O_NOFOLLOW);
++  try {
++    const metadata = await file.stat();
++    if (!metadata.isFile() || metadata.uid !== 0 || (metadata.mode & 0o022) || metadata.size > 1_048_576)
++      throw new Error("admission_bootstrap_policy_unprotected");
++    await protectedParents(canonical);
++    let value: unknown;
++    try { value = JSON.parse(await file.readFile("utf8")); }
++    catch { throw new Error("invalid_admission_bootstrap_policy"); }
++    return parseAdmissionBootstrapPolicy(value);
++  } finally { await file.close(); }
++}
++
++/** Does not invoke SSH, providers, migrations, lifecycle repair or release.
++ * All retained leases without exact native admission journals become holds,
++ * including released/expired/succeeded leases. Native status alone does not
++ * attest stop plus independent workspace/session/credential restoration.
++ */
++export async function bootstrapHeldExecutionAdmission(db: Db, input: unknown) {
++  requireExecutionCapacity(db);
++  const policy = parseAdmissionBootstrapPolicy(input);
++  const policyHash = capacityFingerprint(policy);
++  const epoch = randomUUID();
++  const globalScope = capacityScopeKey("instance", policy.instance);
++  const result = await db.transaction(async tx => {
++    // Serializes empty-schema bootstrap as well as the existing singleton row.
++    await tx.execute(sql`select pg_advisory_xact_lock(174510, 1)`);
++    const [scheduler] = await tx.select().from(admissionScheduler).for("update");
++    if (scheduler && !scheduler.draining) throw new Error("admission_bootstrap_requires_drain");
++    const [previous] = scheduler ? await tx.select().from(admissionBootstraps)
++      .where(eq(admissionBootstraps.epoch, scheduler.epoch)) : [];
++    if (scheduler && !previous) throw new Error("admission_bootstrap_unknown_previous_owner");
++    if (previous && previous.instance !== policy.instance) throw new Error("admission_bootstrap_instance_changed");
++    const attempts = await tx.select().from(admissionAttempts);
++    const commands = await tx.select().from(admissionCommands);
++    const leases = await tx.select().from(environmentLeases);
++    const runs = await tx.select().from(heartbeatRuns);
++    const byRun = new Map(runs.map(run => [run.id, run]));
++    const journalledLeases = new Set<string>();
++    for (const attempt of attempts) if (attempt.binding) journalledLeases.add(`${attempt.companyId}:${attempt.binding.leaseId}`);
++    for (const command of commands) {
++      const parent = attempts.find(attempt => attempt.id === command.attemptId);
++      if (parent && parent.companyId === command.binding.companyId)
++        journalledLeases.add(`${parent.companyId}:${command.binding.leaseId}`);
++    }
++    async function hold(source: string, companyId: string, agentId: string | null, runId: string | null,
++      environmentId: string | null, evidence: Record<string, unknown>) {
++      const owner = policy.legacyOwners.find(owner => owner.companyId === companyId && owner.agentId === agentId &&
++        owner.environmentId === environmentId);
++      // An unknown relation cannot be treated as free space. It blocks the
++      // entire instance instead of guessing which provider family it belongs to.
++      const scopes = owner ? (["runner", "providerAccount", "workspace", "session", "credential"] as const)
++        .map(kind => capacityScopeKey(kind === "providerAccount" ? "account" : kind, owner[kind])).sort() : [globalScope];
++      const evidenceHash = capacityFingerprint(evidence);
++      const [existing] = await tx.select().from(admissionLegacyHolds).where(eq(admissionLegacyHolds.source, source));
++      if (existing) {
++        if (existing.companyId !== companyId || existing.agentId !== agentId || existing.runId !== runId ||
++            existing.environmentId !== environmentId || existing.evidenceHash !== evidenceHash ||
++            JSON.stringify(existing.scopes) !== JSON.stringify(scopes)) throw new Error("admission_legacy_hold_drift");
++        return;
++      }
++      await tx.insert(admissionLegacyHolds).values({ source, companyId, agentId, runId, environmentId,
++        scopes, evidence, evidenceHash, policyHash });
++    }
++    const leaseRuns = new Set<string>();
++    for (const lease of leases) {
++      if (lease.heartbeatRunId) leaseRuns.add(lease.heartbeatRunId);
++      if (journalledLeases.has(`${lease.companyId}:${lease.id}`)) continue;
++      const run = lease.heartbeatRunId ? byRun.get(lease.heartbeatRunId) : undefined;
++      const matchingRun = run?.companyId === lease.companyId ? run : undefined;
++      // Missing/conflicting identity gets the global hold. No request metadata
++      // is sufficient to name a trusted resource family by itself.
++      const agentId = matchingRun && (!lease.metadata?.agentId || lease.metadata.agentId === matchingRun.agentId)
++        ? matchingRun.agentId : null;
++      await hold(`lease:${lease.id}`, lease.companyId, agentId, matchingRun?.id ?? null, lease.environmentId, {
++        kind: "legacy_lease", leaseId: lease.id, companyId: lease.companyId, runId: lease.heartbeatRunId,
++        agentId, environmentId: lease.environmentId, provider: lease.provider, status: lease.status,
++        cleanupStatus: lease.cleanupStatus, releasedAt: lease.releasedAt?.toISOString() ?? null,
++        // Presence is recorded without treating an unvalidated receipt as proof.
++        receiptPresent: lease.metadata?.terminationReceipt != null,
++        runStatus: matchingRun?.status ?? null,
++      });
++    }
++    const trackedRuns = new Set(attempts.filter(attempt => attempt.runId).map(attempt => `${attempt.companyId}:${attempt.runId}`));
++    for (const run of runs) {
++      if (leaseRuns.has(run.id) || trackedRuns.has(`${run.companyId}:${run.id}`)) continue;
++      await hold(`run:${run.id}`, run.companyId, run.agentId, run.id, null, {
++        kind: "legacy_run_without_lease", companyId: run.companyId, agentId: run.agentId, runId: run.id, status: run.status,
++      });
++    }
++    // Every existing hold survives even if its native row is no longer returned.
++    // New ownership never clears old contracts or fabricates remote epoch ACKs.
++    await tx.insert(admissionEpochs).values({ epoch });
++    await tx.insert(admissionBootstraps).values({ epoch, policyHash, instance: policy.instance, mode: "held" });
++    if (scheduler) await tx.update(admissionScheduler).set({ epoch, draining: true, pendingLimit: policy.pendingLimit });
++    else await tx.insert(admissionScheduler).values({ epoch, draining: true, pendingLimit: policy.pendingLimit });
++    await tx.update(admissionAttempts).set({ state: "uncertain", waitReason: "bootstrap_reconciliation_required", updatedAt: new Date() })
++      .where(inArray(admissionAttempts.state, ["reserved", "starting", "stopping", "uncertain"]));
++    return { epoch, policyHash, legacyHolds: (await tx.select({ source: admissionLegacyHolds.source }).from(admissionLegacyHolds)).length };
++  });
++  const admission = executionAdmissionService(db, epoch, trustedCapacityPolicy([]), { startsHeld: true });
++  return { ...result, admission, mode: "held" as const };
++}
++
++export async function bootstrapProductionAdmission(db: Db, policyPath: string | undefined) {
++  requireExecutionCapacity(db);
++  return bootstrapHeldExecutionAdmission(db, await loadAdmissionBootstrapPolicy(policyPath));
++}
++
++export async function loadProductionAdmissionPolicy(input: {
++  databaseUrl?: string | null; autoApply?: string; policyPath?: string;
++}) {
++  if (!input.databaseUrl) throw new Error("admission_bootstrap_requires_external_database");
++  if (input.autoApply !== "false") throw new Error("admission_bootstrap_requires_manual_migration");
++  return loadAdmissionBootstrapPolicy(input.policyPath);
++}
++
++export async function requireAdmissionMigrations(connectionString: string) {
++  const state = await inspectMigrations(connectionString);
++  if (state.status !== "upToDate") throw new Error("admission_bootstrap_schema_not_current");
++}
+--- /dev/null
++++ b/server/src/__tests__/execution-admission-bootstrap.test.ts
+@@ -0,0 +1,236 @@
++import { randomUUID } from "node:crypto";
++import { eq, sql } from "drizzle-orm";
++import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
++import { admissionAttempts, admissionBootstraps, admissionEpochs, admissionLegacyHolds, admissionRunnerEpochs,
++  admissionScheduler, admissionScopes, agents, companies, createDb, environmentLeases, environments, heartbeatRuns,
++} from "@paperclipai/db";
++import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
++import { bootstrapHeldExecutionAdmission, bootstrapProductionAdmission, loadAdmissionBootstrapPolicy,
++  parseAdmissionBootstrapPolicy, loadProductionAdmissionPolicy, requireAdmissionMigrations, type AdmissionBootstrapPolicy } from "../services/execution-admission-bootstrap.js";
++import { executionCapacity, guardCapacityExecution } from "../services/execution-capacity-context.js";
++import { capacityScopeKey } from "../services/execution-capacity-policy.js";
++import { executionAdmissionService } from "../services/execution-admission.js";
++
++const emptyPolicy = (): AdmissionBootstrapPolicy => ({ version: 1, mode: "held", instance: "fixture-instance", pendingLimit: 4, legacyOwners: [] });
++describe("mandatory held admission bootstrap", () => {
++  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
++  let db: ReturnType<typeof createDb>;
++  const clients: ReturnType<typeof createDb>[] = [];
++  function client() { const value = createDb(temporary.connectionString); clients.push(value); return value; }
++  beforeAll(async () => { temporary = await startEmbeddedPostgresTestDatabase("admission-bootstrap-"); db = client(); }, 120_000);
++  afterAll(async () => { await Promise.all(clients.map(c => c.$client.end())); await temporary?.cleanup(); });
++  beforeEach(async () => {
++    await db.execute(sql`truncate execution_admission_legacy_holds, execution_admission_bootstraps,
++      execution_admission_restorations, execution_admission_commands, execution_admission_runner_epochs,
++      execution_admission_attempts, execution_admission_projects, execution_admission_scopes,
++      execution_admission_scheduler, execution_admission_epochs, environment_leases, heartbeat_runs cascade`);
++  });
++  async function seed() {
++    const [company] = await db.insert(companies).values({ name: "legacy", issuePrefix: randomUUID().slice(0, 8) }).returning();
++    const [environment] = await db.insert(environments).values({ name: randomUUID(), driver: "ssh" }).returning();
++    const [a] = await db.insert(agents).values({ companyId: company.id, name: "historical A", adapterType: "codex_local",
++      status: "paused", lifecycleState: "pausing", defaultEnvironmentId: environment.id }).returning();
++    const [b] = await db.insert(agents).values({ companyId: company.id, name: "B", adapterType: "codex_local", defaultEnvironmentId: environment.id }).returning();
++    const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: a.id, status: "cancelled" }).returning();
++    const [lease] = await db.insert(environmentLeases).values({ companyId: company.id, heartbeatRunId: run.id,
++      environmentId: environment.id, status: "expired", provider: "ssh", releasedAt: new Date(), metadata: { agentId: a.id } }).returning();
++    const owner = { companyId: company.id, agentId: a.id, environmentId: environment.id, runner: "physical-codex",
++      providerAccount: "codex-account", credential: "codex-refresh-family", session: "codex-sessions", workspace: "codex-workspaces" };
++    return { company, environment, a, b, run, lease, policy: { ...emptyPolicy(), legacyOwners: [owner] }, owner };
++  }
++  it.each([undefined, "relative.json"])("rejects missing/untrusted policy path %s", async path => {
++    const c = client();
++    await expect(bootstrapProductionAdmission(c, path)).rejects.toThrow("admission_bootstrap_policy_required");
++    expect(() => executionCapacity(c)).toThrow("capacity_bootstrap_required");
++    await expect(guardCapacityExecution(c, { companyId: randomUUID() })).rejects.toThrow("capacity_bootstrap_required");
++    expect(await db.select().from(admissionScheduler)).toHaveLength(0);
++  });
++  it.each([{}, { ...emptyPolicy(), mode: "active" }, { ...emptyPolicy(), startsHeld: false },
++    { ...emptyPolicy(), pendingLimit: 5 }, { ...emptyPolicy(), legacyOwners: [{ runner: "bad" }] }])("rejects malformed or enabling policy %#", value => {
++    expect(() => parseAdmissionBootstrapPolicy(value)).toThrow("invalid_admission_bootstrap_policy");
++  });
++  it("rejects a policy placed in writable /tmp", async () => {
++    const { writeFile, unlink } = await import("node:fs/promises");
++    const path = `/tmp/admission-policy-${randomUUID()}.json`;
++    await writeFile(path, JSON.stringify(emptyPolicy()));
++    try { await expect(loadAdmissionBootstrapPolicy(path)).rejects.toThrow("admission_bootstrap_policy_unprotected"); }
++    finally { await unlink(path); }
++  });
++  it("rejects an agent-writable alias even when it points to a protected policy", async () => {
++    const { symlink, unlink } = await import("node:fs/promises");
++    const path = `/tmp/admission-alias-${randomUUID()}.json`;
++    await symlink("/etc/paperclip-admission-fixture/policy.json", path);
++    try { await expect(loadAdmissionBootstrapPolicy(path)).rejects.toThrow("admission_bootstrap_policy_unprotected"); }
++    finally { await unlink(path); }
++  });
++  it("loads a protected projected configuration file without an agent-writable fallback", async () => {
++    expect(await loadAdmissionBootstrapPolicy("/etc/paperclip-admission-fixture/policy.json")).toEqual(emptyPolicy());
++  });
++  it("rehearses migration failure rollback and successful upgrade with legacy state intact", async () => {
++    const f = await seed();
++    const { readFile } = await import("node:fs/promises");
++    const migration = await readFile(new URL("../../../packages/db/src/migrations/0344_volatile_colossus.sql", import.meta.url), "utf8");
++    const statements = migration.split("--> statement-breakpoint").map(s => s.trim()).filter(Boolean);
++    await db.execute(sql`drop table execution_admission_legacy_holds, execution_admission_bootstraps`);
++    try {
++      await expect(db.transaction(async tx => {
++        await tx.execute(sql.raw(statements[0]));
++        throw Error("injected migration interruption");
++      })).rejects.toThrow("injected migration interruption");
++      const absent = await db.execute(sql`select to_regclass('public.execution_admission_bootstraps') as table_name`);
++      expect(absent[0].table_name).toBeNull();
++      await db.transaction(async tx => { for (const statement of statements) await tx.execute(sql.raw(statement)); });
++      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0]).toEqual(f.lease);
++      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0]).toEqual(f.run);
++      const boot = await bootstrapHeldExecutionAdmission(client(), f.policy);
++      expect(boot.legacyHolds).toBe(1);
++    } finally {
++      // Keep fixture teardown valid even if a rehearsal assertion fails.
++      const present = await db.execute(sql`select to_regclass('public.execution_admission_bootstraps') as table_name`);
++      if (!present[0].table_name) await db.transaction(async tx => { for (const statement of statements) await tx.execute(sql.raw(statement)); });
++    }
++  });
++  it.each([
++    { databaseUrl: undefined, autoApply: "false", error: "admission_bootstrap_requires_external_database" },
++    { databaseUrl: "postgres://fixture", autoApply: undefined, error: "admission_bootstrap_requires_manual_migration" },
++    { databaseUrl: "postgres://fixture", autoApply: "true", error: "admission_bootstrap_requires_manual_migration" },
++  ])("rejects production database/migration fallback %#", async input => {
++    await expect(loadProductionAdmissionPolicy(input)).rejects.toThrow(input.error);
++  });
++  it("refuses an absent migration ledger without repairing it or applying schema", async () => {
++    await requireAdmissionMigrations(temporary.connectionString);
++    const schemas = await db.execute(sql`select table_schema from information_schema.tables
++      where table_name = '__drizzle_migrations' order by table_schema`);
++    const schema = String(schemas[0].table_schema);
++    const original = sql`${sql.identifier(schema)}.${sql.identifier("__drizzle_migrations")}`;
++    const saved = sql`${sql.identifier(schema)}.${sql.identifier("__drizzle_migrations_bootstrap_saved")}`;
++    const before = await db.execute(sql`select * from ${original} order by id`);
++    await db.execute(sql`alter table ${original} rename to __drizzle_migrations_bootstrap_saved`);
++    try {
++      await expect(requireAdmissionMigrations(temporary.connectionString)).rejects.toThrow("admission_bootstrap_schema_not_current");
++      expect(await db.execute(sql`select * from ${saved} order by id`)).toEqual(before);
++      expect(await db.execute(sql`select table_name from information_schema.tables where table_name = '__drizzle_migrations'`)).toHaveLength(0);
++    } finally { await db.execute(sql`alter table ${saved} rename to __drizzle_migrations`); }
++  });
++  it("captures expired A as shared occupancy without changing its historical lease/run/lifecycle", async () => {
++    const f = await seed();
++    const boot = await bootstrapHeldExecutionAdmission(client(), f.policy);
++    const [hold] = await db.select().from(admissionLegacyHolds);
++    expect(hold).toMatchObject({ source: `lease:${f.lease.id}`, companyId: f.company.id, agentId: f.a.id, runId: f.run.id });
++    expect(hold.scopes).toContain(capacityScopeKey("credential", f.owner.credential));
++    expect(hold.scopes).toContain(capacityScopeKey("runner", f.owner.runner));
++    expect(hold.scopes).toHaveLength(5);
++    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0]).toEqual(f.lease);
++    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0]).toEqual(f.run);
++    expect((await db.select().from(agents).where(eq(agents.id, f.a.id)))[0]).toEqual(f.a);
++    expect(boot.legacyHolds).toBe(1);
++    expect(await db.select().from(admissionRunnerEpochs)).toHaveLength(0);
++  });
++  it("blocks B on shared scopes even if someone clears every ordinary drain", async () => {
++    const f = await seed();
++    const boot = await bootstrapHeldExecutionAdmission(client(), f.policy);
++    const [bRun] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.b.id, status: "queued" }).returning();
++    const shared = capacityScopeKey("credential", f.owner.credential);
++    await db.insert(admissionScopes).values({ key: shared, capacity: 1 });
++    const raw = executionAdmissionService(client(), boot.epoch);
++    const attempt = await raw.registerRun({ companyId: f.company.id, runId: bRun.id, scopes: [shared] });
++    await db.update(admissionScheduler).set({ draining: false, evaluationExemptionUntil: new Date(Date.now() + 60_000) });
++    await db.update(admissionScopes).set({ draining: false });
++    expect(await raw.claimNext(async () => { throw Error("must not claim B"); })).toBeNull();
++    expect((await db.select().from(admissionAttempts).where(eq(admissionAttempts.id, attempt.id)))[0].waitReason)
++      .toBe("legacy_occupancy_unreconciled");
++    expect(await boot.admission.claimNext(async () => { throw Error("held bootstrap"); })).toBeNull();
++  });
++  it("uses an instance-wide hold for unmapped leases and lease-less native work", async () => {
++    const f = await seed();
++    await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.b.id, status: "succeeded" });
++    await bootstrapHeldExecutionAdmission(client(), emptyPolicy());
++    const holds = await db.select().from(admissionLegacyHolds);
++    expect(holds).toHaveLength(2);
++    expect(holds.every(h => JSON.stringify(h.scopes) === JSON.stringify([capacityScopeKey("instance", "fixture-instance")]))).toBe(true);
++  });
++  it("does not trust conflicting lease metadata to assign an account", async () => {
++    const f = await seed();
++    await db.update(environmentLeases).set({ metadata: { agentId: f.b.id } }).where(eq(environmentLeases.id, f.lease.id));
++    await bootstrapHeldExecutionAdmission(client(), f.policy);
++    expect((await db.select().from(admissionLegacyHolds))[0]).toMatchObject({ agentId: null,
++      scopes: [capacityScopeKey("instance", "fixture-instance")] });
++  });
++  it("keeps holds byte-identical across restart, fences old controller and records policy/epoch history", async () => {
++    const f = await seed();
++    const one = await bootstrapHeldExecutionAdmission(client(), f.policy);
++    const before = await db.select().from(admissionLegacyHolds);
++    const two = await bootstrapHeldExecutionAdmission(client(), f.policy);
++    expect(two.epoch).not.toBe(one.epoch);
++    expect(await db.select().from(admissionLegacyHolds)).toEqual(before);
++    expect(await db.select().from(admissionBootstraps)).toHaveLength(2);
++    await expect(one.admission.queuedAgents()).resolves.toBeDefined(); // read-only inventory is allowed
++    await expect(one.admission.cancel(f.company.id, randomUUID())).rejects.toThrow("stale_admission_controller");
++    expect((await db.select().from(admissionScheduler))[0]).toMatchObject({ epoch: two.epoch, draining: true });
++  });
++  it("retains previous uncertain ownership on restart without issuing remote acknowledgement", async () => {
++    const f = await seed();
++    const one = await bootstrapHeldExecutionAdmission(client(), f.policy);
++    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.b.id, status: "queued" }).returning();
++    const scope = capacityScopeKey("instance", "fixture-instance");
++    await db.insert(admissionScopes).values({ key: scope, capacity: 1 });
++    const raw = executionAdmissionService(client(), one.epoch);
++    const attempt = await raw.registerRun({ companyId: f.company.id, runId: run.id, scopes: [scope] });
++    await db.update(admissionAttempts).set({ state: "starting", ownerEpoch: one.epoch, token: randomUUID() }).where(eq(admissionAttempts.id, attempt.id));
++    const before = (await db.select().from(admissionAttempts).where(eq(admissionAttempts.id, attempt.id)))[0];
++    await bootstrapHeldExecutionAdmission(client(), f.policy);
++    expect((await db.select().from(admissionAttempts).where(eq(admissionAttempts.id, attempt.id)))[0])
++      .toMatchObject({ state: "uncertain", ownerEpoch: one.epoch, token: before.token, contract: before.contract });
++    expect(await db.select().from(admissionRunnerEpochs)).toHaveLength(0);
++  });
++  it.each(["mapping", "native", "instance"])("fails closed and rolls back on %s drift", async drift => {
++    const f = await seed();
++    await bootstrapHeldExecutionAdmission(client(), f.policy);
++    const before = (await db.select().from(admissionScheduler))[0];
++    const changed = structuredClone(f.policy);
++    if (drift === "mapping") changed.legacyOwners[0].credential = "new-key-bypass";
++    if (drift === "instance") changed.instance = "new-instance-bypass";
++    if (drift === "native") await db.update(environmentLeases).set({ cleanupStatus: "success" }).where(eq(environmentLeases.id, f.lease.id));
++    const c = client();
++    await expect(bootstrapHeldExecutionAdmission(c, changed)).rejects.toThrow(drift === "instance" ? "admission_bootstrap_instance_changed" : "admission_legacy_hold_drift");
++    expect(() => executionCapacity(c)).toThrow("capacity_bootstrap_required");
++    expect((await db.select().from(admissionScheduler))[0]).toEqual(before);
++    expect(await db.select().from(admissionEpochs)).toHaveLength(1);
++    expect(await db.select().from(admissionLegacyHolds)).toHaveLength(1);
++  });
++  it("rejects a second install on one handle before changing durable ownership", async () => {
++    const c = client();
++    await bootstrapHeldExecutionAdmission(c, emptyPolicy());
++    const before = (await db.select().from(admissionScheduler))[0];
++    await expect(bootstrapHeldExecutionAdmission(c, emptyPolicy())).rejects.toThrow("capacity_already_installed");
++    expect((await db.select().from(admissionScheduler))[0]).toEqual(before);
++  });
++  it("refuses unknown previous owners and undrained schedulers", async () => {
++    const epoch = randomUUID();
++    await db.insert(admissionEpochs).values({ epoch });
++    await db.insert(admissionScheduler).values({ epoch, pendingLimit: 4, draining: false });
++    await expect(bootstrapHeldExecutionAdmission(client(), emptyPolicy())).rejects.toThrow("admission_bootstrap_requires_drain");
++    await db.update(admissionScheduler).set({ draining: true });
++    await expect(bootstrapHeldExecutionAdmission(client(), emptyPolicy())).rejects.toThrow("admission_bootstrap_unknown_previous_owner");
++    expect(await db.select().from(admissionBootstraps)).toHaveLength(0);
++  });
++  it("never provides command, lease-launch, run or auxiliary setup authority in held mode", async () => {
++    const boot = await bootstrapHeldExecutionAdmission(client(), emptyPolicy());
++    const owner = { companyId: randomUUID(), attemptId: randomUUID(), token: randomUUID() };
++    await expect(boot.admission.assertRunReady(owner.companyId, randomUUID())).rejects.toThrow("capacity_bootstrap_held");
++    await expect(boot.admission.assertOperationReady(owner)).rejects.toThrow("capacity_bootstrap_held");
++    await expect(boot.admission.journalCommand({ ...owner, leaseId: randomUUID(), commandHash: "a".repeat(64) })).rejects.toThrow("capacity_bootstrap_held");
++    expect(() => boot.admission.journalLaunch({ ...owner, leaseId: randomUUID(), invocationId: randomUUID() })).toThrow("capacity_bootstrap_held");
++    await expect(boot.admission.acknowledgeRunnerEpoch({ companyId: owner.companyId, agentId: randomUUID(), fenceRoot: "/fake", epoch: boot.epoch }))
++      .rejects.toThrow("capacity_bootstrap_held");
++  });
++  it("rolls back partial hold inventory if a later hold conflicts", async () => {
++    const f = await seed();
++    await bootstrapHeldExecutionAdmission(client(), f.policy);
++    const [extra] = await db.insert(environmentLeases).values({ companyId: f.company.id, provider: "ssh", status: "active" }).returning();
++    await db.update(admissionLegacyHolds).set({ evidenceHash: "f".repeat(64) });
++    await expect(bootstrapHeldExecutionAdmission(client(), f.policy)).rejects.toThrow("admission_legacy_hold_drift");
++    expect(await db.select().from(admissionLegacyHolds).where(eq(admissionLegacyHolds.source, `lease:${extra.id}`))).toHaveLength(0);
++    expect(await db.select().from(admissionEpochs)).toHaveLength(1);
++  });
++});
+--- /dev/null
++++ b/packages/db/src/migrations/0344_volatile_colossus.sql
+@@ -0,0 +1,28 @@
++CREATE TABLE "execution_admission_bootstraps" (
++	"epoch" uuid PRIMARY KEY NOT NULL,
++	"policy_hash" text NOT NULL,
++	"instance" text NOT NULL,
++	"mode" text NOT NULL,
++	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
++	CONSTRAINT "execution_admission_bootstrap_mode" CHECK ("execution_admission_bootstraps"."mode" = 'held')
++);
++--> statement-breakpoint
++CREATE TABLE "execution_admission_legacy_holds" (
++	"source" text PRIMARY KEY NOT NULL,
++	"company_id" uuid NOT NULL,
++	"agent_id" uuid,
++	"run_id" uuid,
++	"environment_id" uuid,
++	"scopes" text[] NOT NULL,
++	"evidence" jsonb NOT NULL,
++	"evidence_hash" text NOT NULL,
++	"policy_hash" text NOT NULL,
++	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
++	CONSTRAINT "execution_admission_legacy_scopes" CHECK (cardinality("execution_admission_legacy_holds"."scopes") > 0),
++	CONSTRAINT "execution_admission_legacy_hash" CHECK ("execution_admission_legacy_holds"."evidence_hash" ~ '^[a-f0-9]{64}$' and "execution_admission_legacy_holds"."policy_hash" ~ '^[a-f0-9]{64}$')
++);
++--> statement-breakpoint
++ALTER TABLE "execution_admission_bootstraps" ADD CONSTRAINT "execution_admission_bootstraps_epoch_execution_admission_epochs_epoch_fk" FOREIGN KEY ("epoch") REFERENCES "public"."execution_admission_epochs"("epoch") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "execution_admission_legacy_holds" ADD CONSTRAINT "execution_admission_legacy_holds_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "execution_admission_legacy_holds" ADD CONSTRAINT "execution_admission_legacy_holds_agent_id_agents_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
++ALTER TABLE "execution_admission_legacy_holds" ADD CONSTRAINT "execution_admission_legacy_holds_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE no action ON UPDATE no action;
+\ No newline at end of file

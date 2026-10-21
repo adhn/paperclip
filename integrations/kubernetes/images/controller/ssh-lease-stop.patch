@@ -1,0 +1,403 @@
+--- a/packages/adapter-utils/src/ssh.ts
++++ b/packages/adapter-utils/src/ssh.ts
+@@ -1353,6 +1353,7 @@
+   args: string[];
+   cleanup: () => Promise<void>;
+   stopRemote: () => Promise<void>;
++  sshInvocationId: string;
+ }> {
+   for (const key of Object.keys(input.env)) {
+     if (!isValidShellEnvKey(key)) {
+@@ -1364,7 +1365,8 @@
+   const envArgs = Object.entries(input.env)
+     .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+     .map(([key, value]) => `${key}=${shellQuote(value)}`);
+-  const invocationDir = path.posix.join(input.spec.remoteCwd, ".paperclip-runtime", "process-control", randomUUID());
++  const sshInvocationId = randomUUID();
++  const invocationDir = path.posix.join(input.spec.remoteCwd, ".paperclip-runtime", "process-control", sshInvocationId);
+   const providerCommand = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
+   // Linux/Python are explicit prerequisites of these pinned evaluation runners.
+   const remoteCommandParts = ["python3", "-I", "-c", shellQuote(EVALUATION_SSH_SUPERVISOR), shellQuote(invocationDir), shellQuote(providerCommand)].join(" ");
+@@ -1412,6 +1414,7 @@
+     command: "ssh",
+     args: sshArgs,
+     stopRemote,
++    sshInvocationId,
+     cleanup: async () => {
+       try { await stopRemote(); } finally { await auth.cleanup(); }
+     },
+--- a/packages/adapter-utils/src/server-utils.ts
++++ b/packages/adapter-utils/src/server-utils.ts
+@@ -45,6 +45,7 @@
+ 
+ export interface RunProcessResult {
+   remoteProcessStopped?: boolean;
++  sshInvocationId?: string;
+   exitCode: number | null;
+   signal: string | null;
+   timedOut: boolean;
+@@ -96,6 +97,7 @@
+ }
+ 
+ interface SpawnTarget {
++  sshInvocationId?: string;
+   stopRemote?: () => Promise<void>;
+   command: string;
+   args: string[];
+@@ -3657,6 +3659,7 @@
+       cwd: process.cwd(),
+       cleanup: spawnTarget.cleanup,
+       stopRemote: spawnTarget.stopRemote,
++      sshInvocationId: spawnTarget.sshInvocationId,
+     };
+   }
+ 
+@@ -4953,6 +4956,7 @@
+                   runningProcesses.delete(runId);
+                   resolve({
+                     remoteProcessStopped: Boolean(target.stopRemote),
++                    sshInvocationId: target.sshInvocationId,
+                     exitCode: code,
+                     signal,
+                     timedOut,
+--- a/packages/adapter-utils/src/execution-target.ts
++++ b/packages/adapter-utils/src/execution-target.ts
+@@ -288,7 +288,7 @@
+   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+   /** Trusted invocation observation, not a turn completion callback. Called only
+    * after local child close or a remotely observed exit, including nonzero exits. */
+-  onProcessStopped?: () => void;
++  onProcessStopped?: (proof?: { sshInvocationId: string }) => void;
+   terminalResultCleanup?: TerminalResultCleanupOptions;
+   /**
+    * Sandbox-only: factory from the Paperclip bridge handle that streams the
+@@ -935,8 +935,8 @@
+   // Closing an SSH client on timeout/disconnect does not prove the remote
+   // provider exited. SSH status 255 is transport failure, never a stop receipt.
+   if (!target || target.kind === "local" ||
+-      (result.remoteProcessStopped || (!result.timedOut && !result.signal && result.exitCode !== null && result.exitCode >= 0 && result.exitCode < 255))) {
+-    options.onProcessStopped?.();
++      (result.remoteProcessStopped && result.sshInvocationId)) {
++    options.onProcessStopped?.(result.sshInvocationId ? { sshInvocationId: result.sshInvocationId } : undefined);
+   }
+   return result;
+ }
+--- a/packages/adapter-utils/src/types.ts
++++ b/packages/adapter-utils/src/types.ts
+@@ -248,7 +248,7 @@
+   stopRemoteStartup?: () => Promise<void>;
+   /** Host-owned collection after the final provider invocation is confirmed stopped,
+    * before remote workspace restore or disposal. Never call on an unverified timeout. */
+-  onProviderStopped?: () => Promise<void>;
++  onProviderStopped?: (proof?: { sshInvocationId: string }) => Promise<void>;
+   /** Server-owned, actor-attributed snapshot also rendered by legacy wake prompts. */
+   executionContinuation?: ExecutionContinuationEnvelope | null;
+   runId: string;
+--- a/packages/adapter-utils/src/provider-stopped-boundary.ts
++++ b/packages/adapter-utils/src/provider-stopped-boundary.ts
+@@ -1,19 +1,22 @@
+ /** Per-adapter invocation fence. A failed later attempt invalidates an earlier
+  * stop receipt; a late callback from that earlier attempt cannot restore it. */
+-export function createProviderStoppedBoundary(onProviderStopped?: () => Promise<void>) {
++type StopProof = { sshInvocationId: string };
++export function createProviderStoppedBoundary(onProviderStopped?: (proof?: StopProof) => Promise<void>) {
++  let proof: StopProof | undefined;
+   let invocation = 0;
+   let stopped = false;
+   let collected = false;
+   return {
+-    beginInvocation(): () => void {
++    beginInvocation(): (value?: StopProof) => void {
+       const current = ++invocation;
+       stopped = false;
+-      return () => { if (invocation === current) stopped = true; };
++      proof = undefined;
++      return (value) => { if (invocation === current) { stopped = true; proof = value; } };
+     },
+     async collectBeforeRestore() {
+       if (!stopped || collected || !onProviderStopped) return;
+       collected = true;
+-      await onProviderStopped();
++      await onProviderStopped(proof);
+     },
+   };
+ }
+--- a/packages/adapter-utils/src/provider-stopped-boundary.test.ts
++++ b/packages/adapter-utils/src/provider-stopped-boundary.test.ts
+@@ -73,3 +73,31 @@
+     expect(stopped).toHaveBeenCalledOnce();
+   });
+ });
++
++
++describe("verified SSH stop identity forwarding", () => {
++  const ssh = { kind: "remote", transport: "ssh", spec: { host: "fixture" }, remoteCwd: "/workspace" } as any;
++  it.each([0, 125, 255])("does not infer supervisor proof from SSH exit %s", async exitCode => {
++    vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({ ...result, exitCode });
++    const stopped = vi.fn();
++    await runAdapterExecutionTargetProcess("run", ssh, "provider", [], options(stopped));
++    expect(stopped).not.toHaveBeenCalled();
++  });
++  it("carries the exact verified invocation through the final invocation fence", async () => {
++    const proof = { sshInvocationId: "12345678-1234-1234-1234-123456789abc" };
++    vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({ ...result, exitCode: 125, remoteProcessStopped: true, ...proof });
++    const collect = vi.fn(async () => {});
++    const fence = createProviderStoppedBoundary(collect);
++    await runAdapterExecutionTargetProcess("run", ssh, "provider", [], options(fence.beginInvocation()));
++    await fence.collectBeforeRestore();
++    expect(collect).toHaveBeenCalledWith(proof);
++  });
++  it("does not reuse a previous invocation identity after an uncertain retry", async () => {
++    const collect = vi.fn(async () => {});
++    const fence = createProviderStoppedBoundary(collect);
++    const stale = fence.beginInvocation(); stale({ sshInvocationId: "old" });
++    fence.beginInvocation(); stale({ sshInvocationId: "old" });
++    await fence.collectBeforeRestore();
++    expect(collect).not.toHaveBeenCalled();
++  });
++});
+--- a/server/src/services/heartbeat.ts
++++ b/server/src/services/heartbeat.ts
+@@ -3353,6 +3353,7 @@
+             nativeWorkspaceSync,
+             workspaceRestoreSource,
+             remoteExecution,
++            activeEnvironmentLease,
+           },
+           config: {
+             runtimeConfig,
+--- a/server/src/services/environment-runtime.ts
++++ b/server/src/services/environment-runtime.ts
+@@ -1,3 +1,4 @@
++import { sshLeaseStopReleaseMetadata } from "./heartbeat/ssh-lease-stop.js";
+ import { allowLegacyShutdownWorkspaceCleanup, legacyShutdownWorkspaceResourceProtected } from "./legacy-shutdown-workspace-settlement.js";
+ import { beginIdleTrackedWork } from "./task-admission.js";
+ import { hasStopOnlyCleanup, prepareSandboxStopAndRetain, readStopOnlyCleanup, settleStopOnlyCleanup, stopOnlyCleanupKey } from "./sandbox-stop-and-retain.js";
+@@ -1223,7 +1224,8 @@
+     },
+ 
+     async releaseRunLease(input) {
+-      return await environmentsSvc.releaseLease(input.lease.id, input.status);
++      return await environmentsSvc.releaseLease(input.lease.id, input.status,
++        sshLeaseStopReleaseMetadata(input.lease));
+     },
+ 
+     async realizeWorkspace(input) {
+--- a/server/src/services/heartbeat/runtime-execution.ts
++++ b/server/src/services/heartbeat/runtime-execution.ts
+@@ -33,6 +33,7 @@
+ import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
+ import { isConversation } from "../agent-conversations.js";
+ import { withAdapterExecutionPhase } from "@paperclipai/adapter-utils/execution-phase";
++import { recordSshLeaseProcessStopped } from "./ssh-lease-stop.js";
+ import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
+ import { registerAdapterExecutionControl } from "../adapter-execution-control.js";
+ import { resolveManagedOpenAiBilling } from "@paperclipai/adapter-utils";
+@@ -125,6 +126,7 @@
+     nativeWorkspaceSync: Selected["nativeWorkspaceSync"];
+     workspaceRestoreSource: Parameters<typeof recordLegacyWorkspaceRestoreFailure>[3];
+     remoteExecution: unknown;
++    activeEnvironmentLease?: Selection["workspace"]["activeEnvironmentLease"];
+   };
+   config: Pick<Selection["config"], "runtimeConfig" | "resolvedConfig" | "managedAiRuntime"> & {
+     resolvedInstanceSettings: { experimental: Pick<Awaited<ReturnType<ReturnType<typeof instanceSettingsService>["getExperimental"]>>, "enableWorkspaceBranchReconcileForward" | "enableWorkspaceDirtyQuarantineRepair"> };
+@@ -819,7 +821,18 @@
+                   issueId,
+                 );
+               },
+-              onProviderStopped: collectStoppedInstructions,
++              onProviderStopped: async (proof) => {
++                const lease = input.workspace.activeEnvironmentLease?.lease;
++                if (executionTarget?.kind === "remote" && executionTarget.transport === "ssh") {
++                  if (!lease || !proof) throw new Error("SSH lease termination proof is unavailable");
++                  await recordSshLeaseProcessStopped(db, {
++                    companyId: run.companyId, runId: run.id, agentId: run.agentId,
++                    leaseId: lease.id, environmentId: lease.environmentId,
++                    providerLeaseId: lease.providerLeaseId, invocationId: proof.sshInvocationId,
++                  });
++                }
++                await collectStoppedInstructions?.();
++              },
+               onDispatch: markDispatchStarted,
+               signal: executionControl.controller.signal,
+               ...(executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" ? {
+--- a/server/src/services/heartbeat/runtime-execution.test.ts
++++ b/server/src/services/heartbeat/runtime-execution.test.ts
+@@ -2,7 +2,7 @@
+ import { mkdtemp, rm } from "node:fs/promises";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+-import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
++import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, environmentLeases, environments, issues, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
+ import { eq, sql } from "drizzle-orm";
+ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+@@ -140,6 +140,28 @@
+     expectCleanup(input);
+   });
+ 
++  it("binds the assembled SSH adapter stop callback before instruction collection", async () => {
++    const { input, adapter, run } = await fixture();
++    const [environment] = await db.insert(environments).values({ name: randomUUID(), driver: "ssh" }).returning();
++    const [lease] = await db.insert(environmentLeases).values({ companyId: run.companyId, heartbeatRunId: run.id,
++      environmentId: environment.id, status: "active", leasePolicy: "ephemeral", provider: "ssh",
++      providerLeaseId: "ssh://node@fixture:2222/work", metadata: { agentId: run.agentId } }).returning();
++    input.workspace.executionTarget = { kind: "remote", transport: "ssh", spec: { host: "fixture" }, remoteCwd: "/work" } as any;
++    input.workspace.activeEnvironmentLease = { environment, lease, leaseContext: {} } as any;
++    const invocationId = randomUUID();
++    input.instructions.collectStoppedInstructions = async () => {
++      const [row] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id));
++      expect(row.metadata?.remoteExecutionTermination).toMatchObject({ runId: run.id, leaseId: lease.id, sshInvocationId: invocationId });
++      expect(row.cleanupStatus).toBeNull();
++    };
++    adapter.execute.mockImplementationOnce(async ctx => {
++      await ctx.onProviderStopped?.({ sshInvocationId: invocationId });
++      return { exitCode: 0, signal: null, timedOut: false };
++    });
++    await executeHeartbeatRuntime(db, input);
++    expect(adapter.execute).toHaveBeenCalledOnce();
++  });
++
+   it("preserves Stop metadata and marks no-work accounting without manufacturing a receipt", async () => {
+     const { input, adapter, run } = await fixture();
+     await db.update(heartbeatRuns).set({ status: "cancelled", resultJson: { stoppedByUser: true } }).where(eq(heartbeatRuns.id, run.id));
+--- /dev/null
++++ b/server/src/services/heartbeat/ssh-lease-stop.ts
+@@ -0,0 +1,46 @@
++import { and, eq, isNull, sql } from "drizzle-orm";
++import { environmentLeases, heartbeatRuns, type Db } from "@paperclipai/db";
++import { remoteTerminationReceipt } from "../remote-execution-termination.js";
++
++type Lease = Pick<typeof environmentLeases.$inferSelect,
++  "id" | "companyId" | "heartbeatRunId" | "environmentId" | "provider" | "providerLeaseId" | "metadata">;
++
++/** Called only by the final-invocation stop fence, after the SSH supervisor has
++ * reaped its descendants. The host supplies lease identity, never agent config.
++ * This records process stop only; release and workspace restoration stay separate. */
++export async function recordSshLeaseProcessStopped(db: Db, input: {
++  companyId: string; runId: string; agentId: string; leaseId: string;
++  environmentId: string | null; providerLeaseId: string | null; invocationId: string;
++}) {
++  if (!input.environmentId || !input.providerLeaseId ||
++      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.invocationId)) {
++    throw new Error("SSH termination identity is incomplete");
++  }
++  const receipt = { ...remoteTerminationReceipt({ id: input.leaseId,
++    companyId: input.companyId, heartbeatRunId: input.runId,
++    provider: "ssh", providerLeaseId: input.providerLeaseId,
++  }, { providerLeaseId: input.providerLeaseId, state: "stopped" })!,
++    sshInvocationId: input.invocationId };
++  const [row] = await db.update(environmentLeases).set({
++    metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ remoteExecutionTermination: receipt })}::jsonb`,
++    updatedAt: new Date(),
++  }).where(and(
++    eq(environmentLeases.id, input.leaseId), eq(environmentLeases.companyId, input.companyId),
++    eq(environmentLeases.heartbeatRunId, input.runId), eq(environmentLeases.environmentId, input.environmentId),
++    eq(environmentLeases.provider, "ssh"), eq(environmentLeases.providerLeaseId, input.providerLeaseId),
++    eq(environmentLeases.status, "active"), isNull(environmentLeases.releasedAt),
++    sql`exists (select 1 from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.runId}
++      and ${heartbeatRuns.companyId} = ${input.companyId} and ${heartbeatRuns.agentId} = ${input.agentId}
++      and ${heartbeatRuns.runtimeMode} = 'legacy')`,
++  )).returning({ id: environmentLeases.id });
++  if (!row) throw new Error("SSH termination proof does not match an active host-owned run lease");
++}
++
++export function sshLeaseStopReleaseMetadata(lease: Lease): { cleanupStatus: "success" | "failed"; remoteExecutionTermination?: Record<string, unknown> } {
++  const receipt = lease.metadata?.remoteExecutionTermination as Record<string, unknown> | undefined;
++  const verified = lease.provider === "ssh" && receipt?.schema === "paperclip.remote-termination.v1" &&
++    receipt.companyId === lease.companyId && receipt.runId === lease.heartbeatRunId && receipt.leaseId === lease.id &&
++    receipt.provider === "ssh" && receipt.state === "stopped" && typeof receipt.sshInvocationId === "string" &&
++    /^[0-9a-f-]{36}$/i.test(receipt.sshInvocationId) && remoteTerminationReceipt(lease, receipt);
++  return verified ? { cleanupStatus: "success", remoteExecutionTermination: receipt } : { cleanupStatus: "failed" };
++}
+--- /dev/null
++++ b/server/src/services/heartbeat/ssh-lease-stop.test.ts
+@@ -0,0 +1,88 @@
++import { randomUUID } from "node:crypto";
++import { eq } from "drizzle-orm";
++import { afterAll, beforeAll, describe, expect, it } from "vitest";
++import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns } from "@paperclipai/db";
++import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
++import { recordSshLeaseProcessStopped, sshLeaseStopReleaseMetadata } from "./ssh-lease-stop.js";
++import { environmentRuntimeService } from "../environment-runtime.js";
++import { agentExecutionsHaveStopped } from "../agent-execution-stop.js";
++import { createAgentLifecycle, configureAgentLifecycle } from "../agent-lifecycle.js";
++import { createLifecycleDriver } from "../agent-lifecycle-driver.js";
++import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
++
++const support = await getEmbeddedPostgresTestSupport();
++describe.skipIf(!support.supported)("exact SSH lease termination", () => {
++  let db: ReturnType<typeof createDb>;
++  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
++  beforeAll(async () => { temporary = await startEmbeddedPostgresTestDatabase("ssh-lease-stop-"); db = createDb(temporary.connectionString); }, 30_000);
++  afterAll(async () => { await db?.$client.end(); await temporary?.cleanup(); });
++  async function seed() {
++    const [company] = await db.insert(companies).values({ name: "SSH termination", issuePrefix: randomUUID().slice(0, 8) }).returning();
++    const [environment] = await db.insert(environments).values({ name: randomUUID(), driver: "ssh" }).returning();
++    const siblings = [];
++    for (const name of ["A", "B"]) {
++      const [agent] = await db.insert(agents).values({ companyId: company.id, name, adapterType: "codex_local", status: "idle", lifecycleState: "ready" }).returning();
++      const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, status: "running", runtimeMode: "legacy" }).returning();
++      const [lease] = await db.insert(environmentLeases).values({ companyId: company.id, heartbeatRunId: run.id, environmentId: environment.id,
++        status: "active", provider: "ssh", providerLeaseId: "ssh://node@shared:2222/work", leasePolicy: "ephemeral",
++        metadata: { agentId: agent.id, preserved: name, driver: "ssh" } }).returning();
++      const input = { companyId: company.id, runId: run.id, agentId: agent.id, leaseId: lease.id,
++        environmentId: environment.id, providerLeaseId: lease.providerLeaseId, invocationId: randomUUID() };
++      siblings.push({ agent, run, lease, input });
++    }
++    return siblings;
++  }
++  const read = async (id: string) => (await db.select().from(environmentLeases).where(eq(environmentLeases.id, id)))[0];
++  it("releases only the verified cancelled run and satisfies the lifecycle stop gate", async () => {
++    const [a, b] = await seed();
++    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, a.run.id));
++    expect(await agentExecutionsHaveStopped(db, [a.agent.id])).toBe(false);
++    await recordSshLeaseProcessStopped(db, a.input);
++    expect(hasRemoteTerminationReceipt(await read(a.lease.id))).toBe(false); // release is a separate obligation
++    await environmentRuntimeService(db).releaseRunLeases(a.run.id, "expired");
++    const stopped = await read(a.lease.id);
++    expect(stopped).toMatchObject({ cleanupStatus: "success", status: "expired", metadata: { preserved: "A", remoteExecutionTermination: {
++      runId: a.run.id, leaseId: a.lease.id, sshInvocationId: a.input.invocationId, state: "stopped",
++    } } });
++    expect(hasRemoteTerminationReceipt(stopped)).toBe(true);
++    expect(await agentExecutionsHaveStopped(db, [a.agent.id])).toBe(true);
++    const commands = createAgentLifecycle(db);
++    const driver = createLifecycleDriver(db, {} as never);
++    const worker = configureAgentLifecycle(db, { ...driver,
++      // Harness verification is an external provider boundary in this DB test.
++      runHost: async agent => agent.lifecycleState === "verifying" ? "complete" : driver.runHost(agent),
++    });
++    try {
++      await commands.pauseAgent(a.agent.id);
++      await worker.process(a.agent.id);
++      const current = async () => (await db.select().from(agents).where(eq(agents.id, a.agent.id)))[0];
++      expect(await current()).toMatchObject({ lifecycleState: "paused" });
++      await commands.resumeAgent(a.agent.id);
++      await worker.process(a.agent.id);
++      expect(await current()).toMatchObject({ lifecycleState: "ready", status: "idle" });
++    } finally { await worker.stop(); }
++    expect(await read(b.lease.id)).toMatchObject({ status: "active", cleanupStatus: null, releasedAt: null, metadata: { preserved: "B" } });
++    expect((await read(b.lease.id)).metadata?.remoteExecutionTermination).toBeUndefined();
++    expect(await agentExecutionsHaveStopped(db, [b.agent.id])).toBe(false);
++  });
++  it.each(["companyId", "runId", "agentId", "leaseId", "environmentId", "providerLeaseId", "invocationId"] as const)("rejects mismatched %s without granting stop authority", async field => {
++    const [a, b] = await seed();
++    await expect(recordSshLeaseProcessStopped(db, { ...a.input, [field]: field === "invocationId" ? "invalid" : field === "providerLeaseId" ? "ssh://wrong" : b.input[field] === a.input[field] ? randomUUID() : b.input[field] })).rejects.toThrow();
++    expect((await read(a.lease.id)).metadata?.remoteExecutionTermination).toBeUndefined();
++    expect((await read(b.lease.id)).metadata?.remoteExecutionTermination).toBeUndefined();
++  });
++  it("does not backfill historical leases or accept an expired shared target as proof", async () => {
++    const [a] = await seed();
++    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, a.run.id));
++    await environmentRuntimeService(db).releaseRunLeases(a.run.id, "expired");
++    expect(await read(a.lease.id)).toMatchObject({ status: "expired", cleanupStatus: "failed" });
++    expect(await agentExecutionsHaveStopped(db, [a.agent.id])).toBe(false);
++    await expect(recordSshLeaseProcessStopped(db, a.input)).rejects.toThrow();
++  });
++  it("rejects a receipt copied from a sibling sharing the exact target URI", async () => {
++    const [a, b] = await seed();
++    await recordSshLeaseProcessStopped(db, a.input);
++    const stopped = await read(a.lease.id);
++    expect(sshLeaseStopReleaseMetadata({ ...b.lease, metadata: stopped.metadata })).toEqual({ cleanupStatus: "failed" });
++  });
++});

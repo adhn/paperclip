@@ -1,0 +1,59 @@
+--- a/src/network/HttpClient.ts
++++ b/src/network/HttpClient.ts
+@@ -117,6 +117,7 @@
+             method: method,
+             headers: getFetchHeaders(options),
+             signal: controller.signal, // Enable cancellation via AbortController
++            redirect: "error", // Never forward token request credentials to a redirect target.
+         };
+ 
+         if (method === HttpMethod.POST) {
+@@ -170,9 +171,7 @@
+             throw createAuthError(
+                 ClientAuthErrorCodes.tokenParsingError,
+                 "",
+-                `Failed to parse response: ${
+-                    error instanceof Error ? error.message : "unknown"
+-                }`
++                "Failed to parse response"
+             );
+         }
+     }
+--- a/dist/network/HttpClient.mjs
++++ b/dist/network/HttpClient.mjs
+@@ -94,6 +94,7 @@
+             method: method,
+             headers: getFetchHeaders(options),
+             signal: controller.signal, // Enable cancellation via AbortController
++            redirect: "error", // Never forward token request credentials to a redirect target.
+         };
+         if (method === HttpMethod.POST) {
+             fetchOptions.body = options?.body || "";
+@@ -125,7 +126,7 @@
+             };
+         }
+         catch (error) {
+-            throw createAuthError(ClientAuthErrorCodes.tokenParsingError, "", `Failed to parse response: ${error instanceof Error ? error.message : "unknown"}`);
++            throw createAuthError(ClientAuthErrorCodes.tokenParsingError, "", "Failed to parse response");
+         }
+     }
+ }
+--- a/lib/msal-node.cjs
++++ b/lib/msal-node.cjs
+@@ -8241,6 +8241,7 @@
+             method: method,
+             headers: getFetchHeaders(options),
+             signal: controller.signal, // Enable cancellation via AbortController
++            redirect: "error", // Never forward token request credentials to a redirect target.
+         };
+         if (method === HttpMethod.POST) {
+             fetchOptions.body = options?.body || "";
+@@ -8272,7 +8273,7 @@
+             };
+         }
+         catch (error) {
+-            throw createAuthError(tokenParsingError, "", `Failed to parse response: ${error instanceof Error ? error.message : "unknown"}`);
++            throw createAuthError(tokenParsingError, "", "Failed to parse response");
+         }
+     }
+ }

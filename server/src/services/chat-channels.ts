@@ -1,3 +1,8 @@
+import { isDeepStrictEqual } from "node:util";
+import { readSlackCredentialAuthority } from "./chat-channels/slack-credential-authority.js";
+import { assertSlackSetupConfigurationUse } from "./connectors/slack/setup/new-use-guard.js";
+import { readSecretRecoveryIdentity } from "./secret-recovery-identity.js";
+import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { createChatPublicationResolution } from "./chat-channels/publications/resolution.js";
 import { createChatPublicationRequests } from "./chat-channels/publications/requests.js";
 import { createTeamsBoardSendPreparation } from "./chat-channels/microsoft-teams/board-send-preparation.js";
@@ -527,6 +532,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   // an unverified transfer or its publication merely because a worker saw it.
   const teamsFileRetryAfter = new Map<string, number>();
   const runtimeContexts = new WeakMap<object, RuntimeContext>();
+  const slackRuntimeAuthorities = new WeakMap<object, Awaited<ReturnType<typeof readSlackCredentialAuthority>>>();
   const runtimeInitializations = new Map<
     string,
     {
@@ -615,13 +621,28 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     }
     runtimeLocalEpochs.set(endpointId, localRuntimeEpoch(endpointId) + 1);
     runtimeVersions.delete(endpointId);
-    const discordOwnership = discordGatewayOwnerships.get(endpointId);
-    if (discordOwnership) {
-      const hadRuntime = runtime.get(endpointId) !== null;
-      await stopDiscordGatewayOwnership(discordOwnership);
-      return hadRuntime;
+    const fromCallback = runtime.isInsideEndpointCallback(endpointId);
+    if (fromCallback) runtime.fenceEndpointAdmission(endpointId);
+    const retire = async () => {
+      const discordOwnership = discordGatewayOwnerships.get(endpointId);
+      if (discordOwnership) {
+        const hadRuntime = runtime.get(endpointId) !== null;
+        await stopDiscordGatewayOwnership(discordOwnership);
+        return hadRuntime;
+      }
+      return await runtime.removeEndpoint(endpointId);
+    };
+    const settlement = retire();
+    if (fromCallback) {
+      // The callback cannot await cleanup that must join that same callback.
+      // Request retirement now; the ordinary owner/registry retains settlement.
+      // False explicitly does not acknowledge release or completed retirement.
+      void settlement.catch((error) => logger.warn(
+        { endpointId, error: redactError(error) }, "callback-requested runtime cleanup remains pending",
+      ));
+      return false;
     }
-    return await runtime.removeEndpoint(endpointId);
+    return await settlement;
   }
 
   function scheduleMessageProcessing(task: () => Promise<void>) {
@@ -685,6 +706,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     return db
       .select({
         endpoint: chatEndpoints,
+        connection: toolConnections,
         assignedAgentName: agents.name,
         connectionName: toolConnections.name,
         applicationId: toolConnections.applicationId,
@@ -915,7 +937,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     } = {},
   ): Promise<ChatEndpointRuntime> {
     for (;;) {
+      if (shuttingDown) throw conflict("Chat runtime is shutting down");
       const record = await endpointRecord(endpoint.id);
+      // A caller may have entered before shutdown and awaited this read before
+      // registering its initialization. Fence it before creating any new owner.
+      if (shuttingDown) throw conflict("Chat runtime is shutting down");
       if (!record) throw notFound("Chat endpoint not found");
       if (
         record.endpoint.status === "archived" ||
@@ -941,18 +967,34 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         (!leasedChatProvider(record.endpoint.provider) ||
           optionsForRuntime.requireDiscordOwnership !== true ||
           currentOwnsDiscordGateway)
-      )
-        return current;
+      ) {
+        if (record.endpoint.provider !== "slack") return current;
+        const reusable = await withAccountHomeSecretMutationLock(undefined, record.endpoint.companyId, async () => {
+          await assertSlackSetupConfigurationUse({ companyId: record.endpoint.companyId, endpointId: endpoint.id });
+          const latest = await endpointRecord(endpoint.id);
+          const original = slackRuntimeAuthorities.get(current as object);
+          return !!latest && latest.connection.status === "active" && latest.connection.enabled &&
+            runtime.get(endpoint.id) === current && runtimeContextForRecord(latest).version === context.version &&
+            !!original && isDeepStrictEqual(original, await readSlackCredentialAuthority(db, latest));
+        });
+        if (reusable) return current;
+        // Join only after releasing credential authority. In a callback the
+        // existing invalidator requests retirement without joining itself.
+        await invalidateRuntime(endpoint.id);
+        throw conflict("Slack runtime credential authority changed; initialization must be retried");
+      }
 
       const pending = runtimeInitializations.get(endpoint.id);
       if (pending) {
         try {
           const instance = await pending.promise;
+          if (shuttingDown) throw conflict("Chat runtime is shutting down");
           if (
             pending.version === context.version &&
             (optionsForRuntime.requireDiscordOwnership !== true ||
               pending.discordGatewayOwned)
           ) {
+            if (record.endpoint.provider === "slack") continue;
             return instance;
           }
           if (
@@ -1016,7 +1058,33 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             await runtime.removeEndpoint(endpoint.id);
           }
           recordChatWebhookStage("runtime_initializing", record.endpoint.id);
-          const credentials = await resolveCredentials(record.endpoint);
+          let slackAuthority: Awaited<ReturnType<typeof readSlackCredentialAuthority>> | undefined;
+          const assertSlackStartupCurrent = async () => {
+            const latest = await endpointRecord(endpoint.id);
+            if (!latest || runtimeContextForRecord(latest).version !== context.version ||
+                latest.endpoint.provider !== "slack" || latest.endpoint.companyId !== record.endpoint.companyId ||
+                latest.connection.status !== "active" || !latest.connection.enabled)
+              throw conflict("Slack runtime authority changed before initialization");
+            await assertSlackSetupConfigurationUse({ companyId: record.endpoint.companyId, endpointId: endpoint.id });
+            return latest;
+          };
+          const credentials = record.endpoint.provider === "slack"
+            ? await withAccountHomeSecretMutationLock(undefined, record.endpoint.companyId, async () => {
+                const latest = await assertSlackStartupCurrent();
+                const before = await readSlackCredentialAuthority(db, latest);
+                // Construction below uses this invocation's record. A retirement
+                // join may have changed its control fields without changing the
+                // reference fingerprint; never bind fresh credentials to stale
+                // construction options.
+                if (!isDeepStrictEqual(before, await readSlackCredentialAuthority(db, record)))
+                  throw conflict("Slack runtime construction authority changed during retirement");
+                const resolved = await resolveCredentials(latest.endpoint);
+                const after = await readSlackCredentialAuthority(db, (await assertSlackStartupCurrent()));
+                if (!isDeepStrictEqual(before, after)) throw conflict("Slack runtime credentials changed during resolution");
+                slackAuthority = before;
+                return resolved;
+              })
+            : await resolveCredentials(record.endpoint);
           const discordCommands =
             record.endpoint.provider === "discord" &&
             record.endpoint.botExternalId &&
@@ -1105,7 +1173,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           });
           context.endpointRuntime = instance;
           runtimeContexts.set(instance as object, context);
-          await instance.initialize();
+          if (record.endpoint.provider === "slack") {
+            // Replacement/retirement above can join admitted callbacks. Acquire
+            // credential authority only after those joins, through actual SDK
+            // initialization; release it before any failure cleanup joins.
+            await withAccountHomeSecretMutationLock(undefined, record.endpoint.companyId, async () => {
+              const latest = await assertSlackStartupCurrent();
+              if (!slackAuthority || !isDeepStrictEqual(slackAuthority, await readSlackCredentialAuthority(db, latest)))
+                throw conflict("Slack runtime credential predecessor changed before initialization");
+              await instance!.initialize();
+            });
+          } else await instance.initialize();
           const latest = await endpointRecord(endpoint.id);
           const stillRegistered = runtime.get(endpoint.id) === instance;
           const stillCurrent =
@@ -1132,25 +1210,44 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           ) {
             throw discordGatewayNotOwnedError();
           }
+          if (slackAuthority) {
+            await withAccountHomeSecretMutationLock(undefined, record.endpoint.companyId, async () => {
+              const latest = await assertSlackStartupCurrent();
+              if (!isDeepStrictEqual(slackAuthority, await readSlackCredentialAuthority(db, latest)))
+                throw conflict("Slack runtime authority changed after initialization");
+              slackRuntimeAuthorities.set(instance as object, slackAuthority!);
+            });
+          }
           runtimeVersions.set(endpoint.id, context.version);
           return instance;
         } catch (error) {
-          if (instance && runtime.get(endpoint.id) === instance) {
-            await runtime.removeEndpoint(endpoint.id).catch(() => undefined);
-            runtimeVersions.delete(endpoint.id);
-          } else if (!runtime.get(endpoint.id)) {
-            runtimeVersions.delete(endpoint.id);
-          }
           if (discordOwnership) {
-            await stopDiscordGatewayOwnership(discordOwnership, false);
+            // The exact lease remains occupied if receiver cleanup fails. Do not
+            // bypass retained retirement state with a lease-only stop.
+            await stopDiscordGatewayOwnership(discordOwnership).catch((cleanupError) => {
+              logger.warn(
+                { endpointId: endpoint.id, error: redactError(cleanupError) },
+                "could not clean up chat receiver after initialization failure",
+              );
+            });
+          } else if (instance && runtime.get(endpoint.id) === instance) {
+            await runtime.removeEndpoint(endpoint.id).catch((cleanupError) => {
+              logger.warn(
+                { endpointId: endpoint.id, error: redactError(cleanupError) },
+                "could not clean up chat runtime after initialization failure",
+              );
+            });
           }
+          runtimeVersions.delete(endpoint.id);
           throw error;
         }
       })();
       initialization.promise = promise;
       runtimeInitializations.set(endpoint.id, initialization);
       try {
-        return await promise;
+        const instance = await promise;
+        if (shuttingDown) throw conflict("Chat runtime is shutting down");
+        return instance;
       } finally {
         if (runtimeInitializations.get(endpoint.id) === initialization) {
           runtimeInitializations.delete(endpoint.id);
@@ -1496,7 +1593,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       discordGatewayOwnerships.get(endpoint.id) === lostDiscordOwnership
     ) {
       lostDiscordOwnership.stopping = true;
-      void stopDiscordGatewayOwnership(lostDiscordOwnership);
+      void stopDiscordGatewayOwnership(lostDiscordOwnership).catch((error) => {
+        logger.warn(
+          { endpointId: endpoint.id, error: redactError(error) },
+          "could not stop chat receiver after admission ownership loss",
+        );
+      });
     }
     if (!admittedDeliveryId && admission?.candidate) {
       recordChatWebhookReceipt(
@@ -3823,6 +3925,23 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       if (!record) throw notFound("Chat endpoint not found");
       return (await resolveCredentials(record.endpoint)).signingSecret;
     },
+    runtimeBotCredential: async endpointId => {
+      const selected = await endpointRecord(endpointId);
+      if (!selected) throw notFound("Chat endpoint not found");
+      return withAccountHomeSecretMutationLock(undefined, selected.endpoint.companyId, async () => {
+        const record = await endpointRecord(endpointId);
+        if (!record) throw notFound("Chat endpoint not found");
+        const ref = record.credentialSecretRefs.find(ref => ref.configPath === "credentials.botToken");
+        if (!ref || (ref.versionSelector ?? "latest") !== "latest") throw conflict("Slack credential authority requires inspection");
+        const identity = await readSecretRecoveryIdentity(db, record.endpoint.companyId, ref.secretId);
+        const value = (await resolveCredentials(record.endpoint)).botToken;
+        const after = await endpointRecord(endpointId);
+        const currentIdentity = await readSecretRecoveryIdentity(db, record.endpoint.companyId, ref.secretId);
+        if (!after || after.endpoint.companyId !== record.endpoint.companyId || after.endpoint.connectionId !== record.endpoint.connectionId ||
+            JSON.stringify(after.credentialSecretRefs) !== JSON.stringify(record.credentialSecretRefs) || JSON.stringify(identity) !== JSON.stringify(currentIdentity) || typeof value !== "string" || !value) throw conflict("Slack credential authority changed");
+        return { value, identity };
+      });
+    },
     runtimeBotToken: async endpointId => {
       const record = await endpointRecord(endpointId);
       if (!record) throw notFound("Chat endpoint not found");
@@ -3857,6 +3976,23 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       const record = await endpointRecord(endpointId);
       if (!record) throw notFound("Chat endpoint not found");
       return withCredentialMutationLease(record.endpoint, work);
+    },
+    runtimeBotCredential: async endpointId => {
+      const selected = await endpointRecord(endpointId);
+      if (!selected) throw notFound("Chat endpoint not found");
+      return withAccountHomeSecretMutationLock(undefined, selected.endpoint.companyId, async () => {
+        const record = await endpointRecord(endpointId);
+        if (!record) throw notFound("Chat endpoint not found");
+        const ref = record.credentialSecretRefs.find(ref => ref.configPath === "credentials.botToken");
+        if (!ref || (ref.versionSelector ?? "latest") !== "latest") throw conflict("Slack credential authority requires inspection");
+        const identity = await readSecretRecoveryIdentity(db, record.endpoint.companyId, ref.secretId);
+        const value = (await resolveCredentials(record.endpoint)).botToken;
+        const after = await endpointRecord(endpointId);
+        const currentIdentity = await readSecretRecoveryIdentity(db, record.endpoint.companyId, ref.secretId);
+        if (!after || after.endpoint.companyId !== record.endpoint.companyId || after.endpoint.connectionId !== record.endpoint.connectionId ||
+            JSON.stringify(after.credentialSecretRefs) !== JSON.stringify(record.credentialSecretRefs) || JSON.stringify(identity) !== JSON.stringify(currentIdentity) || typeof value !== "string" || !value) throw conflict("Slack credential authority changed");
+        return { value, identity };
+      });
     },
     runtimeBotToken: async endpointId => {
       const record = await endpointRecord(endpointId);
@@ -4041,6 +4177,10 @@ return {
     getIssueBinding,
     shutdown: async () => {
       shuttingDown = true;
+      // runtimeFor now refuses registration after this synchronous fence. Join
+      // every already registered initialization, including lease acquisition and
+      // its failure cleanup, before taking the receiver ownership snapshot.
+      await Promise.allSettled([...runtimeInitializations.values()].map((entry) => entry.promise));
       await Promise.allSettled(pendingFailedRetries());
       unregisterFailedRetryAuthority();
       unregisterSlackTaskAuthority();
@@ -4059,21 +4199,23 @@ return {
           ownership.renewTimer = null;
         }
       }
-      discordGatewayOwnerships.clear();
       await Promise.allSettled(
         ownedDiscordGateways
           .map((ownership) => ownership.renewal)
           .filter((renewal): renewal is Promise<void> => renewal !== null),
       );
       await Promise.allSettled([...discordGatewayStopTasks]);
-      // Stop every provider runtime before releasing leader rows. This gives a
-      // standby an immediate takeover path without overlapping Gateway sockets.
+      // Local runtime cleanup must succeed before releasing exact lease rows.
+      // Lease expiry still requires independent physical receiver fencing.
       await runtime.shutdown();
       await slackRegistration.close();
       await Promise.all(
-        ownedDiscordGateways.map((ownership) =>
-          releaseDiscordGatewayLeaseRow(ownership),
-        ),
+        ownedDiscordGateways.map(async (ownership) => {
+          await releaseDiscordGatewayLeaseRow(ownership);
+          if (discordGatewayOwnerships.get(ownership.endpointId) === ownership) {
+            discordGatewayOwnerships.delete(ownership.endpointId);
+          }
+        }),
       );
     },
   };

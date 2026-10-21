@@ -1,0 +1,14 @@
+  it("does not signal an exited SSH client after verified remote stop", async () => {
+    const { company, agent } = await fixture();
+    const run = await liveRun(company.id, agent.id);
+    const stopRemote = vi.fn(async () => undefined);
+    runningProcesses.set(run.id, {
+      child: { pid: 424242, exitCode: 125, signalCode: null } as never,
+      graceSec: 2, processGroupId: 424242, stopRemote,
+    });
+    const deps = callbacks(db);
+    expect(await createHeartbeatRunControl(db, deps).cancelRunInternal(run.id)).toMatchObject({ status: "cancelled" });
+    expect(stopRemote).toHaveBeenCalledOnce();
+    expect(terminateLocalService).not.toHaveBeenCalled();
+    expect((await deps.getRun(run.id))?.status).toBe("cancelled");
+  });

@@ -63,6 +63,8 @@ export interface SessionReuseStoreConfig<T> {
    * releases twice.
    */
   readonly release: (entry: T) => void | Promise<void>;
+  /** Staged resources keep occupancy until actual disposal returns. */
+  readonly deleteAfterRelease?: boolean;
   /**
    * Read an entry's per-entry idle timer, or `undefined` when it holds none.
    * The host lane supplies this; the sandbox lane omits it and arms no timer.
@@ -87,6 +89,20 @@ export interface SessionReuseStoreConfig<T> {
   readonly withEvictLease?: (key: string, critical: () => Promise<void>) => Promise<void>;
 }
 
+const exactSessionReleases = new Map<unknown, Promise<void>>();
+const sessionCleanupDetails = new WeakMap<SessionCleanupInspectionError, unknown>();
+export class SessionCleanupInspectionError extends Error {
+  constructor(original: unknown) { super("Session cleanup requires exact inspection"); this.name = "SessionCleanupInspectionError"; sessionCleanupDetails.set(this, original); }
+  static inspect(error: SessionCleanupInspectionError) { return sessionCleanupDetails.get(error); }
+}
+/** Denial bound to an actual failed original cleanup, never a release exemption. */
+export function retainSessionCleanup(entry: unknown, original: unknown): void {
+  if (exactSessionReleases.has(entry)) return;
+  const failure = Promise.reject(new SessionCleanupInspectionError(original));
+  void failure.catch(() => {});
+  exactSessionReleases.set(entry, failure);
+}
+
 /**
  * Create a generic per-session reuse store over the caller-provided map. The
  * store holds at most one entry per session key. Each entry carries its saved
@@ -97,6 +113,7 @@ export function createSessionReuseStore<T>(
   config: SessionReuseStoreConfig<T>,
 ): SessionReuseStore<T> {
   const { entries } = config;
+  const stagedReleases = exactSessionReleases;
 
   function clearEntryTimer(entry: T): void {
     const timer = config.getTimer?.(entry);
@@ -105,15 +122,25 @@ export function createSessionReuseStore<T>(
     config.setTimer?.(entry, undefined);
   }
 
-  // Release an entry once and drop it from the map when it is still the current
-  // entry at the key. The map-identity guard makes the release idempotent: the
-  // synchronous `delete` runs before the awaited release, so a second release of
-  // the same entry finds a different or absent entry at the key and stops.
+  // Host-default removal keeps its historical ordering. Opted-in owners retain
+  // the exact entry and original cleanup promise until acknowledgment.
   async function releaseEntry(key: string, entry: T): Promise<void> {
     clearEntryTimer(entry);
     if (entries.get(key) !== entry) return;
-    entries.delete(key);
-    await config.release(entry);
+    if (config.deleteAfterRelease) {
+      let release = stagedReleases.get(entry);
+      if (!release) {
+        release = Promise.resolve().then(() => config.release(entry));
+        stagedReleases.set(entry, release);
+      }
+      // Rejected original cleanup remains occupied; never automatically replay it.
+      await release;
+      if (entries.get(key) === entry) entries.delete(key);
+      stagedReleases.delete(entry);
+    } else {
+      entries.delete(key);
+      await config.release(entry);
+    }
   }
 
   function armTimer(key: string, entry: T): void {
@@ -121,7 +148,7 @@ export function createSessionReuseStore<T>(
     clearEntryTimer(entry);
     const delayMs = Math.max(1, config.lastUsedAt(entry) + config.idleMs - config.now());
     const timer = setTimeout(() => {
-      void (async () => {
+      const release = (async () => {
         if (entries.get(key) !== entry) return;
         // A later touch can move `lastUsedAt` forward, so re-check the idle
         // window and re-arm the timer when the entry is still in use.
@@ -131,6 +158,8 @@ export function createSessionReuseStore<T>(
         }
         await releaseEntry(key, entry);
       })();
+      if (config.deleteAfterRelease) void release.catch(() => {});
+      else void release;
     }, delayMs);
     timer.unref?.();
     config.setTimer?.(entry, timer);
@@ -140,6 +169,7 @@ export function createSessionReuseStore<T>(
     borrow(sessionKey: string): T | undefined {
       const entry = entries.get(sessionKey);
       if (entry === undefined) return undefined;
+      if (config.deleteAfterRelease && stagedReleases.has(entry)) throw new SessionCleanupInspectionError(stagedReleases.get(entry));
       // The entry is in use now, so clear its per-entry idle timer. The next
       // `save` re-arms a fresh timer after the run finishes.
       clearEntryTimer(entry);
@@ -147,6 +177,8 @@ export function createSessionReuseStore<T>(
     },
 
     save(sessionKey: string, entry: T): void {
+      const current = entries.get(sessionKey);
+      if (config.deleteAfterRelease && current !== undefined && stagedReleases.has(current)) throw new SessionCleanupInspectionError(stagedReleases.get(current));
       // The caller sets the entry's last-used time before it saves, so `save`
       // sets the entry as-is and arms its timer from that time.
       entries.set(sessionKey, entry);

@@ -1,0 +1,8 @@
+# DISPOSABLE ONLY: NSS identity required by embedded PostgreSQL's os.userInfo().
+# No application compilation, dependency download, runtime privileges or sockets.
+ARG NATIVE_TEST_BASE=paperclip-admission-transport-test
+FROM ${NATIVE_TEST_BASE}
+USER root
+RUN useradd --uid 2000 --user-group --no-create-home --home-dir /tmp --shell /usr/sbin/nologin launchfixture \
+ && node --import /app/server/node_modules/tsx/dist/loader.mjs --input-type=module -e 'import { prepareEmbeddedPostgresNativeRuntime } from "/app/packages/db/src/embedded-postgres-native.ts"; await prepareEmbeddedPostgresNativeRuntime();'
+USER 2000:2000

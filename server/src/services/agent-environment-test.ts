@@ -1,3 +1,4 @@
+import { guardCapacityExecution } from "./execution-capacity-context.js";
 import type { Db } from "@paperclipai/db";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { AdapterEnvironmentCheck } from "@paperclipai/adapter-utils";
@@ -66,6 +67,8 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     sandboxIdentityCheck?: AdapterEnvironmentCheck | null;
     release: (status?: "released" | "failed") => Promise<void>;
   }> {
+    await guardCapacityExecution(db, { companyId: input.companyId,
+      environmentId: input.environmentId ?? undefined });
     const noopRelease = async () => {};
 
     if (!input.environmentId) {
@@ -465,6 +468,7 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
   }
 
   async function testManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding, managed: Awaited<ReturnType<typeof prepareManagedAiRuntime>>, agentId?: string) {
+    await guardCapacityExecution(db, { companyId: context.companyId });
     const startedAt = new Date();
     const result = await probeManagedEnvironment(adapterType, context, binding);
     // A provider rejection invalidates the tested credential generation. A

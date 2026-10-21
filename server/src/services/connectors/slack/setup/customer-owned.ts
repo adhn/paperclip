@@ -1,3 +1,5 @@
+import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
+import { assertSlackSetupNewUse } from "./new-use-guard.js";
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { chatSlackRegistrations } from "@paperclipai/db";
@@ -8,10 +10,19 @@ import type { CredentialMutationLeaseGuard } from "../../../chat-credential-muta
 import { object, knownProviderErrors, providerFailure, type Registration, type SlackSetupActor, type SlackRegistrationStore } from "./registration.js";
 export function createCustomerOwnedSetup(store: SlackRegistrationStore) {
   const { db, options, endpoint, registration, callbackUri, origin, api, audit, saveSecrets, setFailure, saveAvatar, assertOrigins, renderAvatar } = store;
+  async function assertNewUse(endpointId: string, actor: SlackSetupActor, lease: CredentialMutationLeaseGuard) {
+    const current = await endpoint(endpointId, actor);
+    await assertSlackSetupNewUse({ companyId: current.endpoint.companyId, endpointId, actorUserId: actor.userId });
+    await lease.assertOwned();
+    return current;
+  }
   async function create(endpointId: string, actor: SlackSetupActor, input: SlackRegistrationInput, managed?: { grantId: string; workspaceId: string; request: typeof api }) {
     return options.withLock(endpointId, async lease => {
+      const selected = await endpoint(endpointId, actor);
+      return withAccountHomeSecretMutationLock(undefined, selected.endpoint.companyId, async () => {
       const api = managed?.request ?? store.api;
       const current = await endpoint(endpointId, actor);
+      await assertNewUse(endpointId, actor, lease);
       const previous = await registration(endpointId);
       const method = managed ? "managed" : "automatic";
       if (current.endpoint.setup.slackSetupMethod !== method) throw conflict("Resume the selected Slack setup method");
@@ -39,6 +50,7 @@ export function createCustomerOwnedSetup(store: SlackRegistrationStore) {
       // the signing secret. Add event subscriptions only after that secret is durable.
       const { event_subscriptions: _events, ...creationSettings } = manifest.settings;
       const creationManifest = { ...manifest, settings: creationSettings };
+      await assertNewUse(endpointId, actor, lease);
       try { await api("apps.manifest.validate", { manifest: JSON.stringify(manifest) }, input.credentials.configurationToken); }
       catch (error) {
         if (error instanceof Error && "status" in error) throw error;
@@ -50,11 +62,13 @@ export function createCustomerOwnedSetup(store: SlackRegistrationStore) {
       const values = { companyId: current.endpoint.companyId, requestId: input.requestId, status: "creating" as const,
         manifest, manifestHash: createHash("sha256").update(JSON.stringify(manifest)).digest("hex"), callbackUri: redirect,
         createdByUserId: actor.userId, managerGrantId: managed?.grantId ?? null, workspaceId: managed?.workspaceId ?? null, errorCode: null, updatedAt: new Date() };
+      await assertNewUse(endpointId, actor, lease);
       const [row] = await db.insert(chatSlackRegistrations).values({ endpointId, ...values })
         .onConflictDoUpdate({ target: chatSlackRegistrations.endpointId, set: values }).returning();
       await audit(row, actor, "creation_started");
       let createdAppId: string;
       try {
+        await assertNewUse(endpointId, actor, lease);
         const result = await api("apps.manifest.create", { manifest: JSON.stringify(creationManifest) }, input.credentials.configurationToken);
         const credentials = object(result.credentials);
         if (typeof result.app_id !== "string" || !/^A[A-Z0-9]+$/.test(result.app_id)
@@ -83,10 +97,12 @@ export function createCustomerOwnedSetup(store: SlackRegistrationStore) {
       // An audit outage cannot change the saved creation outcome.
       try { await audit({ ...row, appId: createdAppId }, actor, "app_created"); }
       catch { logger.warn({ endpointId, appId: createdAppId }, "Slack app creation activity could not be recorded"); }
+      });
     });
   }
   async function configureAvatar(row: Registration, actor: SlackSetupActor, configurationToken: string, lease: CredentialMutationLeaseGuard, api = store.api) {
-    const current = await endpoint(row.endpointId, actor);
+    return withAccountHomeSecretMutationLock(undefined, row.companyId, async () => {
+    const current = await assertNewUse(row.endpointId, actor, lease);
     await saveAvatar(row, { status: "pending" }, actor, lease);
     let avatar: SlackAvatarState;
     try {
@@ -104,6 +120,7 @@ export function createCustomerOwnedSetup(store: SlackRegistrationStore) {
       const upload = new FormData();
       upload.set("app_id", row.appId!);
       upload.set("file", new Blob([new Uint8Array(png)], { type: "image/png" }), "agent-avatar.png");
+      await assertNewUse(row.endpointId, actor, lease);
       await api("apps.icon.set", upload, configurationToken);
       avatar = { status: "uploaded", uploadedAt: new Date().toISOString() };
     } catch {
@@ -113,13 +130,16 @@ export function createCustomerOwnedSetup(store: SlackRegistrationStore) {
     await saveAvatar(row, avatar, actor, lease);
     try { await audit(row, actor, avatar.status === "uploaded" ? "avatar_uploaded" : "avatar_upload_failed", avatar.status === "failed" ? avatar.errorCode : undefined); }
     catch { logger.warn({ endpointId: row.endpointId, appId: row.appId! }, "Slack avatar activity could not be recorded"); }
+    });
   }
   async function configureManifest(row: Registration, actor: SlackSetupActor, configurationToken: string, lease: CredentialMutationLeaseGuard, method: "automatic" | "managed" = "automatic", api = store.api) {
-    const current = await endpoint(row.endpointId, actor);
+    return withAccountHomeSecretMutationLock(undefined, row.companyId, async () => {
+    const current = await assertNewUse(row.endpointId, actor, lease);
     if (current.endpoint.status !== "draft" || current.endpoint.setup.slackSetupMethod !== method)
       throw conflict("Resume the saved Slack connection before configuring its app");
     assertOrigins(row, current.endpoint.publicId);
     await lease.assertOwned();
+    await assertNewUse(row.endpointId, actor, lease);
     try {
       await api("apps.manifest.update", { app_id: row.appId!, manifest: JSON.stringify(row.manifest) }, configurationToken);
     } catch {
@@ -134,6 +154,7 @@ export function createCustomerOwnedSetup(store: SlackRegistrationStore) {
       .where(and(eq(chatSlackRegistrations.endpointId, row.endpointId), eq(chatSlackRegistrations.requestId, row.requestId)));
     await audit(row, actor, "manifest_updated");
     return true;
+    });
   }
   return { create, configureManifest };
 }

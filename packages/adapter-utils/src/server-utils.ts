@@ -44,6 +44,8 @@ export function buildRuntimeToolsEnv(
 }
 
 export interface RunProcessResult {
+  remoteProcessStopped?: boolean;
+  sshInvocationId?: string;
   exitCode: number | null;
   signal: string | null;
   timedOut: boolean;
@@ -88,12 +90,15 @@ export interface TerminalResultCleanupEvidence {
 }
 
 interface RunningProcess {
+  stopRemote?: () => Promise<void>;
   child: ChildProcess;
   graceSec: number;
   processGroupId: number | null;
 }
 
 interface SpawnTarget {
+  sshInvocationId?: string;
+  stopRemote?: () => Promise<void>;
   command: string;
   args: string[];
   cwd?: string;
@@ -3653,6 +3658,8 @@ async function resolveSpawnTarget(
       args: spawnTarget.args,
       cwd: process.cwd(),
       cleanup: spawnTarget.cleanup,
+      stopRemote: spawnTarget.stopRemote,
+      sshInvocationId: spawnTarget.sshInvocationId,
     };
   }
 
@@ -4774,6 +4781,7 @@ export async function runChildProcess(
             : Promise.resolve();
 
         runningProcesses.set(runId, {
+          stopRemote: target.stopRemote,
           child,
           graceSec: opts.graceSec,
           processGroupId,
@@ -4921,7 +4929,9 @@ export async function runChildProcess(
           if (timeout) clearTimeout(timeout);
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
-          void target.cleanup?.();
+          void Promise.resolve().then(() => target.cleanup?.()).catch((error) => {
+            onLogError(error, runId, "failed to verify command cleanup after spawn error");
+          });
           const errno = (err as NodeJS.ErrnoException).code;
           const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
           const msg =
@@ -4940,12 +4950,13 @@ export async function runChildProcess(
           (code: number | null, signal: NodeJS.Signals | null) => {
             if (timeout) clearTimeout(timeout);
             clearTerminalCleanupTimers();
-            runningProcesses.delete(runId);
-            void logChain.finally(() => {
-              void Promise.resolve()
-                .then(() => target.cleanup?.())
-                .finally(() => {
+            // Keep ownership until remote descendants are verified stopped.
+            // Cleanup failure rejects execution instead of becoming a false receipt.
+            void logChain.then(() => target.cleanup?.()).then(() => {
+                  runningProcesses.delete(runId);
                   resolve({
+                    remoteProcessStopped: Boolean(target.stopRemote),
+                    sshInvocationId: target.sshInvocationId,
                     exitCode: code,
                     signal,
                     timedOut,
@@ -4965,8 +4976,7 @@ export async function runChildProcess(
                         }
                       : null,
                   });
-                });
-            });
+            }).catch(reject);
           },
         );
       })

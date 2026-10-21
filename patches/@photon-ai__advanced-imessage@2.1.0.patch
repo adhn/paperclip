@@ -1,0 +1,135 @@
+--- a/dist/chunk-KA2VVWQX.js
++++ b/dist/chunk-KA2VVWQX.js
+@@ -7138,6 +7138,9 @@
+   _closed = false;
+   /** Whether a consumer has already attached to this stream. */
+   _consumed = false;
++  _iterator;
++  _returnPromise;
++  _closePromise;
+   /**
+    * When a consumer is blocked on `next()`, this resolver lets `.close()`
+    * interrupt it immediately.
+@@ -7171,6 +7174,8 @@
+     let stopped = false;
+     const run = async () => {
+       const iter = this._iterate();
++      let failed = false;
++      let failure;
+       try {
+         for (; ; ) {
+           const result = await iter.next();
+@@ -7179,8 +7184,16 @@
+           }
+           await callback(result.value);
+         }
++      } catch (error) {
++        failed = true;
++        failure = error;
++        throw error;
+       } finally {
+-        await iter.return?.(void 0);
++        try { await iter.return?.(void 0); }
++        catch (error) {
++          if (failed) throw new AggregateError([failure, error], "Stream callback and iterator return failed");
++          throw error;
++        }
+       }
+     };
+     run().catch((error) => {
+@@ -7243,16 +7256,28 @@
+   // -------------------------------------------------------------------------
+   // Lifecycle
+   // -------------------------------------------------------------------------
+-  /** Signal the stream is done. Interrupts any pending iteration. */
+-  async close() {
+-    if (this._closed) {
+-      return;
+-    }
++  /** Join cleanup and admitted source return. Does not join user callbacks. */
++  close() {
++    if (this._closePromise) return this._closePromise;
+     this._closed = true;
+     this._cancelResolve?.();
+-    if (this._cleanup) {
+-      await this._cleanup();
++    // Publish before invoking arbitrary cleanup, including reentrant close().
++    this._closePromise = Promise.resolve().then(async () => {
++      const outcomes = await Promise.allSettled([
++        Promise.resolve().then(() => this._cleanup?.()),
++        this._returnSource()
++      ]);
++      const errors = outcomes.filter((item) => item.status === "rejected").map((item) => item.reason);
++      if (errors.length === 1) throw errors[0];
++      if (errors.length > 1) throw new AggregateError(errors, "Stream cleanup and iterator return failed");
++    });
++    return this._closePromise;
++  }
++  _returnSource() {
++    if (!this._returnPromise) {
++      this._returnPromise = Promise.resolve().then(() => this._iterator?.return?.(void 0)).then(() => void 0);
+     }
++    return this._returnPromise;
+   }
+   /** `Symbol.asyncDispose` -- enables `await using`. */
+   async [Symbol.asyncDispose]() {
+@@ -7281,7 +7306,11 @@
+    * closed flag.
+    */
+   async *_iterate() {
++    if (this._closed) return;
+     const iterator = this._source[Symbol.asyncIterator]();
++    this._iterator = iterator;
++    let failed = false;
++    let failure;
+     try {
+       while (!this._closed) {
+         const nextPromise = iterator.next();
+@@ -7295,15 +7324,19 @@
+         }
+         yield result.value;
+       }
++    } catch (error) {
++      failed = true;
++      failure = error;
++      throw error;
+     } finally {
+-      const cleanup = iterator.return?.(void 0);
+-      if (cleanup && this._closed) {
+-        cleanup.catch(() => void 0);
+-      } else if (cleanup) {
+-        await cleanup;
++      try { await this._returnSource(); }
++      catch (error) {
++        if (failed) throw new AggregateError([failure, error], "Stream iteration and iterator return failed");
++        throw error;
+       }
+     }
+   }
++
+   /**
+    * Returns a promise that resolves to `undefined` when `.close()` is called.
+    * If the stream is already closed, resolves immediately.
+--- a/dist/groups-CMgks3Ll.d.ts
++++ b/dist/groups-CMgks3Ll.d.ts
+@@ -876,6 +876,9 @@
+     private _closed;
+     /** Whether a consumer has already attached to this stream. */
+     private _consumed;
++    private _iterator;
++    private _returnPromise;
++    private _closePromise;
+     /**
+      * When a consumer is blocked on `next()`, this resolver lets `.close()`
+      * interrupt it immediately.
+@@ -907,8 +910,9 @@
+      * `count <= 0` returns an empty stream without consuming the parent.
+      */
+     take(count: number): TypedEventStream<T>;
+-    /** Signal the stream is done. Interrupts any pending iteration. */
++    /** Join cleanup and admitted source return. Does not join user callbacks. */
+     close(): Promise<void>;
++    private _returnSource;
+     /** `Symbol.asyncDispose` -- enables `await using`. */
+     [Symbol.asyncDispose](): Promise<void>;
+     /**
